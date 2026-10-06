@@ -1,8 +1,25 @@
-# Finkow — Web Frontend (v2)
+# Finkow — Web Frontend (v2.1)
 
 Next.js (App Router) frontend for **Finkow**, the source-available AI
-investing product. English UI, calm dark "sentient UI", gold (`#F59E0B`)
-brand accent, Inter type.
+investing product. English UI, deep-charcoal "gold mine" design system,
+Inter + Fraunces type.
+
+## Design — gold system (v2.1)
+
+Premium "gold mine" feel: wealth, solidity, calm — never flashy casino.
+
+- **Palette**: near-black `#0A0A0B` backgrounds, primary gold `#F59E0B`,
+  rich gradients `#FFE9A8 → #F59E0B → #B45309` for hero moments, CTAs,
+  and the portfolio pulse.
+- **Aceternity-style elements, implemented in-repo** (`components/effects.tsx`,
+  Tailwind + CSS, no extra deps): `LampGlow` on the goal screen,
+  `SpotlightCard` (cursor-tracking gold light) on opportunities,
+  `TracingBeam` on the agent feed, `InfiniteRail` (pauses on hover/focus)
+  for the opportunity rail.
+- **Sentient + bespoke**: proactive, conversational, ambient, explanatory,
+  calm. Every animation resolves to a static state under
+  `prefers-reduced-motion`.
+- Tokens and keyframes live in `app/globals.css` (`@theme`).
 
 ## What it is
 
@@ -59,10 +76,13 @@ src/
     PlanCard.tsx             # plain-language plan + allocation bars
     AgentFeed.tsx            # live agent activity with typing indicators
     PortfolioPulse.tsx       # alive portfolio status, plain language
-    OpportunityCard.tsx      # opportunity + one-tap paper invest
+    OpportunityCard.tsx      # opportunity + one-tap paper invest (spotlight card)
     Explainer.tsx            # "ask why" grounded explanations
-    ui.tsx                   # shared primitives (cards, buttons, disclosures)
+    effects.tsx              # LampGlow, SpotlightCard, TracingBeam, InfiniteRail, GoldRule
+    ui.tsx                   # shared primitives (cards, buttons incl. GoldButton, disclosures)
   lib/
     finkow-client.ts         # typed v2 API client (mock default, HTTP ready)
     finkow-client.test.ts    # client contract tests
+    rail.ts                  # duplicateForLoop helper for the infinite rail
+    rail.test.ts             # rail loop tests
 ```
