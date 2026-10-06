@@ -19,10 +19,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               className="inline-flex cursor-pointer items-center gap-2.5 transition-opacity duration-200 hover:opacity-80"
               aria-label="Finkow home"
             >
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent">
+              <span className="btn-sheen flex h-9 w-9 items-center justify-center rounded-lg gold-bg shadow-[0_6px_20px_-6px_rgba(245,158,11,0.5)]">
                 <Coins className="h-5 w-5 text-on-accent" aria-hidden />
               </span>
-              <span className="text-xl font-bold tracking-tight">Finkow</span>
+              <span className="font-display text-xl font-semibold tracking-tight">Finkow</span>
             </a>
             <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
               Paper money
