@@ -39,6 +39,35 @@ export function SectionHeading({
 /* Buttons                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Gold gradient CTA with a sheen sweep on hover — the "gold mine"
+ * primary action. Wealth and solidity, never flashy.
+ */
+export function GoldButton({
+  children,
+  onClick,
+  disabled = false,
+  type = "button",
+  className = "",
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  type?: "button" | "submit";
+  className?: string;
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`btn-sheen inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl gold-bg px-5 py-2.5 text-sm font-semibold text-on-accent shadow-[0_8px_30px_-8px_rgba(245,158,11,0.45)] transition-all duration-200 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function PrimaryButton({
   children,
   onClick,
