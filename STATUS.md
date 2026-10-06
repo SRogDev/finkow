@@ -13,12 +13,13 @@
 - 2026-10-06 — v2 web merged (PR #5): sentient UI conversational home.
 - 2026-10-06 — v2 API merged (PR #6): provider ports + AIsa adapters + 4-agent pipeline, 62 tests.
 - 2026-10-06 — AIsa connected + live-verified (market data $0.02/call, LLM <$0.01, search ~$0.016).
+- 2026-10-06 — v2.1 API merged: orchestrator + 4 specialists (LearningAgent, OpportunityHunter, FinancialAnalyst, InvestmentExecutor) + governance (verifier, audit, rate limiter, PII filter) + human confirmation gate + Stripe billing skeleton (flagged) + Alpaca-shaped brokerage interface (mock). Simulated E2E investment flow verified with exact balances. 154 tests green.
 
 ## In progress / blocked
-- v2.1 build (brief in `docs/BUILD_V2_1.md`): gold system design + orchestrator/4-agent harness (adapting Polygrow patterns) + Stripe billing (flagged) + brokerage interface + simulated E2E verification — two builders running.
+- v2.1 web (gold system design, Aceternity-style sentient UI) — separate track.
 
 ## Next
-- Verify + merge v2.1 builder PRs; screenshot; production-readiness checklist.
+- Screenshot + production-readiness checklist for Roger.
 - Connect Supabase schema (data currently in-memory).
 - Real-money execution (phase 3): brokerage keys + compliance — explicitly out of v2.1 scope (interface only, disabled path).
 - Per PLAN.md phases; brand gold #F59E0B.

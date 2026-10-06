@@ -1,10 +1,10 @@
-"""Finkow FastAPI backend — v2: AI investing agents on virtual money.
+"""Finkow FastAPI backend — v2.1: orchestrated agent harness on virtual money.
 
 v1 endpoints (accounts, orders, quotes, portfolio, transactions, history,
-/ai/explain) are unchanged. v2 adds provider ports (MarketData/LLM/WebSearch
-with AIsa + mock + free direct adapters), the agent pipeline (GoalPlanner,
-OpportunityRadar, PortfolioPilot, Explainer) with an append-only event log,
-and the goal/radar/invest/explain/activity endpoints.
+/ai/explain) are unchanged. v2 added provider ports and the agent pipeline.
+v2.1 adds the orchestrator harness (single entry, 4 specialists, confidence
+routing, checkpoints), governance (verifier, audit log, rate limiter, PII
+filter), Stripe product billing (flagged), and the brokerage interface (mock).
 
 Paper money only — there is no real-money code path in this service.
 """
@@ -14,16 +14,24 @@ from __future__ import annotations
 import os
 from decimal import Decimal, InvalidOperation
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import ai as ai_ops
 from app.agents.events import EventLog
+from app.agents.executor import InvestmentExecutor
 from app.agents.explainer import Explainer
+from app.agents.learning import LearningAgent
 from app.agents.pilot import PortfolioPilot
 from app.agents.planner import Allocation, GoalPlanner, parse_goal
 from app.agents.radar import OpportunityRadar
+from app.billing.stripe_billing import BillingNotConfigured, StripeBilling
+from app.brokerage import BrokeragePort, MockBrokerage, OrderSide
+from app.governance.audit import AuditLog
+from app.governance.pii_filter import PIIFilter
+from app.governance.rate_limiter import RateLimiter, wrap_port
+from app.harness.orchestrator import Orchestrator, RunRequest
 from app.market import (
     CachedMarketData,
     MarketDataError,
@@ -43,7 +51,7 @@ from app.trading import (
     execute_paper_sell,
 )
 
-app = FastAPI(title="Finkow API", version="0.2.0")
+app = FastAPI(title="Finkow API", version="0.2.1")
 
 
 def _cors_origins() -> list[str]:
@@ -76,6 +84,14 @@ _market_port: MarketDataPort | None = None
 _llm: LLMPort | None = None
 _search: WebSearchPort | None = None
 _events = EventLog()
+_audit = AuditLog()
+_brokerage: BrokeragePort | None = None
+_pii = PIIFilter()
+# Paid-call budget for AIsa ports (per minute, per port kind). 0 disables.
+_aisa_limiter = RateLimiter(
+    max_calls=int(os.environ.get("FINKOW_AISA_RATE_LIMIT_PER_MIN", "60") or 60),
+    window_seconds=60.0,
+)
 
 
 def get_store() -> InMemoryStore:
@@ -92,21 +108,29 @@ def get_market() -> CachedMarketData:
 def get_market_port() -> MarketDataPort:
     global _market_port
     if _market_port is None:
-        _market_port = build_market_port()
+        port = build_market_port()
+        _market_port = _guard_paid(port, "aisa.market")
     return _market_port
+
+
+def _guard_paid(port, key: str):
+    """Rate-limit paid (AIsa) ports only — mocks and free fallbacks stay open."""
+    if os.environ.get("AISA_API_KEY"):
+        return wrap_port(port, _aisa_limiter, key)
+    return port
 
 
 def get_llm() -> LLMPort:
     global _llm
     if _llm is None:
-        _llm = build_llm()
+        _llm = _guard_paid(build_llm(), "aisa.llm")
     return _llm
 
 
 def get_search() -> WebSearchPort:
     global _search
     if _search is None:
-        _search = build_search()
+        _search = _guard_paid(build_search(), "aisa.search")
     return _search
 
 
@@ -114,15 +138,67 @@ def get_events() -> EventLog:
     return _events
 
 
+def get_audit() -> AuditLog:
+    return _audit
+
+
+def get_pii() -> PIIFilter:
+    return _pii
+
+
+def get_billing() -> StripeBilling:
+    # Fresh per request: tests toggle STRIPE_SECRET_KEY via env.
+    return StripeBilling()
+
+
+def get_brokerage() -> BrokeragePort:
+    global _brokerage
+    if _brokerage is None:
+        _brokerage = MockBrokerage()
+    return _brokerage
+
+
+def get_orchestrator(
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+    llm: LLMPort = Depends(get_llm),
+    search: WebSearchPort = Depends(get_search),
+    events: EventLog = Depends(get_events),
+    audit: AuditLog = Depends(get_audit),
+) -> Orchestrator:
+    return Orchestrator(
+        store=store, market=market, llm=llm, search=search, events=events, audit=audit
+    )
+
+
+def get_executor(
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+    events: EventLog = Depends(get_events),
+    audit: AuditLog = Depends(get_audit),
+) -> InvestmentExecutor:
+    return InvestmentExecutor(store, market, events, audit)
+
+
+def get_learning(
+    store: InMemoryStore = Depends(get_store),
+    llm: LLMPort = Depends(get_llm),
+    events: EventLog = Depends(get_events),
+) -> LearningAgent:
+    return LearningAgent(llm, store, events)
+
+
 def reset_state() -> None:
-    """Test hook: fresh store, market, ports, and event log between tests."""
-    global _store, _market, _market_port, _llm, _search, _events
+    """Test hook: fresh store, market, ports, events, audit, brokerage."""
+    global _store, _market, _market_port, _llm, _search, _events, _audit, _brokerage
     _store = InMemoryStore()
     _market = None
     _market_port = None
     _llm = None
     _search = None
     _events = EventLog()
+    _audit = AuditLog()
+    _brokerage = None
 
 
 # ---------------------------------------------------------------- requests
@@ -262,7 +338,7 @@ def _serialize_plan(goal_id: str, plan: dict) -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.2.0"}
+    return {"status": "ok", "version": "0.2.1"}
 
 
 @app.post("/api/accounts")
@@ -400,8 +476,9 @@ def create_goal(
     body: CreateGoalRequest,
     store: InMemoryStore = Depends(get_store),
     events: EventLog = Depends(get_events),
+    pii: PIIFilter = Depends(get_pii),
 ) -> dict:
-    text = (body.text or "").strip()
+    text = pii.redact((body.text or "").strip())
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
     if body.amount is not None:
@@ -606,4 +683,313 @@ def agent_activity(
             }
             for e in listed
         ]
+    }
+
+
+# ------------------------------------------------- v2.1 routes: harness, gate, billing
+
+
+class HarnessRunRequest(BaseModel):
+    text: str
+    account_id: str | None = None
+
+
+class ProposeRequest(BaseModel):
+    account_id: str
+    allocations: list[AllocationInput]
+
+
+class ConfirmRequest(BaseModel):
+    approval_id: str
+    approved: bool
+
+
+class ProfileUpdateRequest(BaseModel):
+    risk: str | None = None
+    horizon_years: float | None = None
+    preferences: dict | None = None
+
+
+class CheckoutRequest(BaseModel):
+    price_id: str
+    success_url: str
+    cancel_url: str
+    customer_email: str | None = None
+    mode: str = "subscription"
+
+
+class BrokerageOrderRequest(BaseModel):
+    symbol: str
+    qty: str  # decimal string
+    side: str  # "buy" | "sell"
+
+
+def _allocations_or_400(items: list[AllocationInput]) -> list[Allocation]:
+    allocations: list[Allocation] = []
+    for item in items:
+        try:
+            weight = Decimal(item.weight)
+        except (InvalidOperation, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="weight must be a decimal number"
+            ) from exc
+        if weight <= 0 or weight > 1:
+            raise HTTPException(status_code=400, detail="weight must be between 0 and 1")
+        symbol = item.symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        allocations.append(Allocation(symbol, weight, ""))
+    if not allocations:
+        raise HTTPException(status_code=400, detail="at least one allocation is required")
+    return allocations
+
+
+@app.get("/api/analyze/{symbol}")
+async def analyze_symbol(
+    symbol: str,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+) -> dict:
+    try:
+        analysis = await orchestrator.analyze(symbol)
+    except ValueError as exc:
+        if "unknown symbol" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "symbol": analysis.symbol,
+        "price": str(analysis.price),
+        "verdict": analysis.verdict,
+        "risk_flags": analysis.risk_flags,
+        "summary_plain": analysis.summary_plain,
+    }
+
+
+@app.post("/api/harness/run")
+async def harness_run(
+    body: HarnessRunRequest,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+) -> dict:
+    if not (body.text or "").strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        result = await orchestrator.run(
+            RunRequest(text=body.text, account_id=body.account_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "run_id": result.run_id,
+        "intent": result.intent,
+        "confidence": result.confidence,
+        "requires_human": result.requires_human,
+        "human_question": result.human_question,
+        "results": result.results,
+        "checkpoints": result.checkpoints,
+        "error": result.error,
+    }
+
+
+@app.post("/api/executor/propose")
+async def executor_propose(
+    body: ProposeRequest,
+    executor: InvestmentExecutor = Depends(get_executor),
+) -> dict:
+    allocations = _allocations_or_400(body.allocations)
+    try:
+        approval = await executor.propose(body.account_id, allocations)
+    except ValueError as exc:
+        if "account not found" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "approval_id": approval.id,
+        "status": approval.status,
+        "trades": approval.trades,
+        "total_usd": str(approval.total_usd),
+        "created_at": approval.created_at.isoformat(),
+    }
+
+
+@app.post("/api/executor/confirm")
+async def executor_confirm(
+    body: ConfirmRequest,
+    executor: InvestmentExecutor = Depends(get_executor),
+) -> dict:
+    try:
+        return await executor.confirm(body.approval_id, body.approved)
+    except ValueError as exc:
+        if "approval not found" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/audit")
+def get_audit_log(
+    account_id: str | None = None,
+    action: str | None = None,
+    limit: int = 100,
+    audit: AuditLog = Depends(get_audit),
+) -> dict:
+    entries = audit.list(
+        account_id=account_id, action=action, limit=max(limit, 1)
+    )
+    return {
+        "entries": [
+            {
+                "id": e.id,
+                "actor": e.actor,
+                "action": e.action,
+                "account_id": e.account_id,
+                "outcome": e.outcome,
+                "details": e.details,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ]
+    }
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(
+    body: CheckoutRequest,
+    billing: StripeBilling = Depends(get_billing),
+) -> dict:
+    # Stripe moves PRODUCT money (subscriptions), never market orders.
+    try:
+        return billing.create_checkout_session(
+            price_id=body.price_id,
+            success_url=body.success_url,
+            cancel_url=body.cancel_url,
+            customer_email=body.customer_email,
+            mode=body.mode,
+        )
+    except BillingNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(
+    request: Request,
+    billing: StripeBilling = Depends(get_billing),
+) -> dict:
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        event = billing.handle_webhook(
+            payload=payload, signature=signature, webhook_secret=None
+        )
+    except BillingNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Skeleton: authenticity verified; fulfillment (granting the subscription)
+    # is product logic owned by the caller.
+    return {"received": True, "type": event.get("type")}
+
+
+@app.get("/api/brokerage/account")
+async def brokerage_account(
+    brokerage: BrokeragePort = Depends(get_brokerage),
+) -> dict:
+    account = await brokerage.get_account()
+    return {
+        "cash": str(account.cash),
+        "portfolio_value": str(account.portfolio_value),
+        "currency": account.currency,
+        "live": account.live,
+    }
+
+
+@app.post("/api/brokerage/orders")
+async def brokerage_submit_order(
+    body: BrokerageOrderRequest,
+    brokerage: BrokeragePort = Depends(get_brokerage),
+) -> dict:
+    try:
+        side = OrderSide(body.side.lower())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="side must be 'buy' or 'sell'"
+        ) from exc
+    try:
+        qty = Decimal(body.qty)
+    except (InvalidOperation, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail="qty must be a decimal number"
+        ) from exc
+    try:
+        order = await brokerage.submit_order(body.symbol, qty, side)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "id": order.id,
+        "symbol": order.symbol,
+        "qty": str(order.qty),
+        "side": order.side.value,
+        "status": order.status,
+        "filled_price": str(order.filled_price) if order.filled_price else None,
+    }
+
+
+@app.get("/api/brokerage/orders/{order_id}")
+async def brokerage_get_order(
+    order_id: str,
+    brokerage: BrokeragePort = Depends(get_brokerage),
+) -> dict:
+    order = await brokerage.get_order(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="order not found")
+    return {
+        "id": order.id,
+        "symbol": order.symbol,
+        "qty": str(order.qty),
+        "side": order.side.value,
+        "status": order.status,
+        "filled_price": str(order.filled_price) if order.filled_price else None,
+    }
+
+
+@app.get("/api/profile/{account_id}")
+def get_profile(
+    account_id: str,
+    learning: LearningAgent = Depends(get_learning),
+    store: InMemoryStore = Depends(get_store),
+) -> dict:
+    if store.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    profile = learning.get_profile(account_id)
+    return {
+        "account_id": profile.account_id,
+        "risk": profile.risk,
+        "horizon_years": profile.horizon_years,
+        "preferences": profile.preferences,
+    }
+
+
+@app.put("/api/profile/{account_id}")
+def update_profile(
+    account_id: str,
+    body: ProfileUpdateRequest,
+    learning: LearningAgent = Depends(get_learning),
+    store: InMemoryStore = Depends(get_store),
+    pii: PIIFilter = Depends(get_pii),
+) -> dict:
+    if store.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    try:
+        profile = learning.update_profile(
+            account_id,
+            risk=body.risk,
+            horizon_years=body.horizon_years,
+            preferences=body.preferences,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "account_id": profile.account_id,
+        "risk": profile.risk,
+        "horizon_years": profile.horizon_years,
+        "preferences": profile.preferences,
     }
