@@ -1,4 +1,13 @@
-"""Finkow FastAPI backend — virtual-money investing sandbox (Phase 1)."""
+"""Finkow FastAPI backend — v2: AI investing agents on virtual money.
+
+v1 endpoints (accounts, orders, quotes, portfolio, transactions, history,
+/ai/explain) are unchanged. v2 adds provider ports (MarketData/LLM/WebSearch
+with AIsa + mock + free direct adapters), the agent pipeline (GoalPlanner,
+OpportunityRadar, PortfolioPilot, Explainer) with an append-only event log,
+and the goal/radar/invest/explain/activity endpoints.
+
+Paper money only — there is no real-money code path in this service.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +19,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import ai as ai_ops
-from app.market import CachedMarketData, MarketDataUnavailable, Quote, SymbolNotFound
+from app.agents.events import EventLog
+from app.agents.explainer import Explainer
+from app.agents.pilot import PortfolioPilot
+from app.agents.planner import Allocation, GoalPlanner, parse_goal
+from app.agents.radar import OpportunityRadar
+from app.market import (
+    CachedMarketData,
+    MarketDataError,
+    MarketDataUnavailable,
+    Quote,
+    SymbolNotFound,
+)
 from app.money import cash_str, qty_str, to_cash, to_qty
-from app.portfolio import average_cost, unrealized_pnl, value_portfolio
-from app.store import InMemoryStore, Position, Snapshot, Transaction, new_id, utcnow
+from app.portfolio import PortfolioView, value_portfolio
+from app.ports import LLMPort, MarketDataPort, ProviderError, WebSearchPort
+from app.providers import build_llm, build_market_port, build_search
+from app.store import InMemoryStore, Snapshot, utcnow
+from app.trading import (
+    InsufficientFundsError,
+    InsufficientPositionError,
+    execute_paper_buy,
+    execute_paper_sell,
+)
 
-app = FastAPI(title="Finkow API", version="0.1.0")
+app = FastAPI(title="Finkow API", version="0.2.0")
 
 
 def _cors_origins() -> list[str]:
@@ -40,8 +68,14 @@ app.add_middleware(
     max_age=600,
 )
 
+DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "VTI", "BND", "BTC", "ETH", "SOL"]
+
 _store = InMemoryStore()
 _market: CachedMarketData | None = None
+_market_port: MarketDataPort | None = None
+_llm: LLMPort | None = None
+_search: WebSearchPort | None = None
+_events = EventLog()
 
 
 def get_store() -> InMemoryStore:
@@ -55,11 +89,40 @@ def get_market() -> CachedMarketData:
     return _market
 
 
+def get_market_port() -> MarketDataPort:
+    global _market_port
+    if _market_port is None:
+        _market_port = build_market_port()
+    return _market_port
+
+
+def get_llm() -> LLMPort:
+    global _llm
+    if _llm is None:
+        _llm = build_llm()
+    return _llm
+
+
+def get_search() -> WebSearchPort:
+    global _search
+    if _search is None:
+        _search = build_search()
+    return _search
+
+
+def get_events() -> EventLog:
+    return _events
+
+
 def reset_state() -> None:
-    """Test hook: fresh store and market between tests."""
-    global _store, _market
+    """Test hook: fresh store, market, ports, and event log between tests."""
+    global _store, _market, _market_port, _llm, _search, _events
     _store = InMemoryStore()
     _market = None
+    _market_port = None
+    _llm = None
+    _search = None
+    _events = EventLog()
 
 
 # ---------------------------------------------------------------- requests
@@ -79,6 +142,21 @@ class OrderRequest(BaseModel):
 class ExplainRequest(BaseModel):
     account_id: str
     question: str
+
+
+class CreateGoalRequest(BaseModel):
+    text: str
+    amount: str | None = None  # decimal string; overrides the amount parsed from text
+
+
+class AllocationInput(BaseModel):
+    symbol: str
+    weight: str  # decimal string, 0 < w <= 1
+
+
+class InvestRequest(BaseModel):
+    account_id: str
+    allocations: list[AllocationInput]
 
 
 # ---------------------------------------------------------------- helpers
@@ -102,21 +180,41 @@ async def get_quote(symbol: str, market: CachedMarketData = Depends(get_market))
     }
 
 
-async def _portfolio_view(account_id: str, store: InMemoryStore, market: CachedMarketData):
+async def _portfolio_view_from(account_id: str, store: InMemoryStore, fetch) -> PortfolioView:
+    """Value a portfolio; ``fetch(symbol)`` returns a Quote or None (stale)."""
     account = store.get_account(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     positions = store.get_positions(account_id)
     quotes: dict[str, Quote] = {}
     for pos in positions:
-        try:
-            quotes[pos.symbol] = await market.get_quote(pos.symbol)
-        except MarketDataUnavailable:
-            pass  # value_portfolio falls back to avg_cost, marked stale
+        quote = await fetch(pos.symbol)
+        if quote is not None:
+            quotes[pos.symbol] = quote
     return value_portfolio(account, positions, quotes)
 
 
-def _serialize_portfolio(pv) -> dict:
+async def _portfolio_view(account_id: str, store: InMemoryStore, market: CachedMarketData):
+    async def fetch(symbol: str):
+        try:
+            return await market.get_quote(symbol)
+        except MarketDataUnavailable:
+            return None  # value_portfolio falls back to avg_cost, marked stale
+
+    return await _portfolio_view_from(account_id, store, fetch)
+
+
+async def _portfolio_view_port(account_id: str, store: InMemoryStore, market: MarketDataPort):
+    async def fetch(symbol: str):
+        try:
+            return await market.get_quote(symbol)
+        except (MarketDataError, ProviderError):
+            return None
+
+    return await _portfolio_view_from(account_id, store, fetch)
+
+
+def _serialize_portfolio(pv: PortfolioView) -> dict:
     return {
         "account_id": pv.account_id,
         "cash": cash_str(pv.cash),
@@ -142,12 +240,29 @@ def _serialize_portfolio(pv) -> dict:
     }
 
 
-# ---------------------------------------------------------------- routes
+def _serialize_plan(goal_id: str, plan: dict) -> dict:
+    return {
+        "goal_id": goal_id,
+        "summary_plain": plan["summary_plain"],
+        "horizon_years": plan["horizon_years"],
+        "risk_level": plan["risk_level"],
+        "allocations": [
+            {
+                "symbol": a["symbol"],
+                "weight": format(Decimal(str(a["weight"])), ".4f"),
+                "rationale": a.get("rationale", ""),
+            }
+            for a in plan["allocations"]
+        ],
+    }
+
+
+# ---------------------------------------------------------------- v1 routes (unchanged)
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 @app.post("/api/accounts")
@@ -189,58 +304,16 @@ async def place_order(
         raise HTTPException(status_code=503, detail=f"market data unavailable: {exc}") from exc
     symbol, price = quote.symbol, quote.price
 
-    realized: Decimal | None = None
-    if side == "buy":
-        cost = to_cash(price * qty)
-        if cost > account.cash:
-            raise HTTPException(
-                status_code=400,
-                detail=f"insufficient funds: need ${cash_str(cost)}, "
-                f"have ${cash_str(account.cash)}",
-            )
-        account.cash = to_cash(account.cash - cost)
-        position = store.get_position(account.id, symbol)
-        if position is None:
-            position = Position(
-                account_id=account.id, symbol=symbol, qty=qty, avg_cost=to_cash(price)
-            )
+    # Paper-trade execution shares one code path with the PortfolioPilot agent.
+    try:
+        if side == "buy":
+            txn = execute_paper_buy(store, account.id, symbol, qty, price)
         else:
-            position.avg_cost = average_cost(position.qty, position.avg_cost, qty, price)
-            position.qty = to_qty(position.qty + qty)
-        store.upsert_position(position)
-        cash_delta = -cost
-    else:
-        position = store.get_position(account.id, symbol)
-        if position is None or position.qty < qty:
-            have = qty_str(position.qty) if position else "0"
-            raise HTTPException(
-                status_code=400,
-                detail=f"insufficient position: trying to sell {qty_str(qty)} {symbol}, "
-                f"hold {have}",
-            )
-        proceeds = to_cash(price * qty)
-        realized = unrealized_pnl(qty, position.avg_cost, price)
-        account.cash = to_cash(account.cash + proceeds)
-        remaining = to_qty(position.qty - qty)
-        if remaining == 0:
-            store.remove_position(account.id, symbol)
-        else:
-            position.qty = remaining
-            store.upsert_position(position)
-        cash_delta = proceeds
-
-    txn = Transaction(
-        id=new_id(),
-        account_id=account.id,
-        symbol=symbol,
-        side=side,
-        qty=qty,
-        price=price,
-        cash_delta=cash_delta,
-        realized_pnl=realized,
-        created_at=utcnow(),
-    )
-    store.add_transaction(txn)
+            txn = execute_paper_sell(store, account.id, symbol, qty, price)
+    except InsufficientFundsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except InsufficientPositionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     pv = await _portfolio_view(account.id, store, market)
     store.add_snapshot(
@@ -258,7 +331,7 @@ async def place_order(
         "quantity": qty_str(qty),
         "price": qty_str(price),
         "cash_after": cash_str(account.cash),
-        "realized_pnl": cash_str(realized) if realized is not None else None,
+        "realized_pnl": cash_str(txn.realized_pnl) if txn.realized_pnl is not None else None,
         "stale_price": quote.stale,
     }
 
@@ -317,3 +390,220 @@ async def ai_explain(
 ) -> dict:
     pv = await _portfolio_view(body.account_id, store, market)
     return await ai_ops.explain_portfolio(pv, body.question)
+
+
+# ---------------------------------------------------------------- v2 routes: goals + agents
+
+
+@app.post("/api/goals")
+def create_goal(
+    body: CreateGoalRequest,
+    store: InMemoryStore = Depends(get_store),
+    events: EventLog = Depends(get_events),
+) -> dict:
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if body.amount is not None:
+        try:
+            amount = to_cash(Decimal(body.amount))
+        except (InvalidOperation, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="amount must be a decimal number"
+            ) from exc
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="amount must be positive")
+    else:
+        amount = parse_goal(text).amount
+    account = store.create_account(email=None, initial_cash=amount)
+    goal = store.create_goal(text=text, amount=amount, account_id=account.id)
+    events.append(
+        "planner",
+        "goal.created",
+        {"goal_id": goal.id, "account_id": account.id, "amount": str(amount)},
+    )
+    return {
+        "goal_id": goal.id,
+        "account_id": account.id,
+        "amount": cash_str(amount),
+        "text": text,
+        "created_at": goal.created_at.isoformat(),
+    }
+
+
+@app.get("/api/goals/{goal_id}")
+def get_goal(goal_id: str, store: InMemoryStore = Depends(get_store)) -> dict:
+    goal = store.get_goal(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return {
+        "goal_id": goal.id,
+        "text": goal.text,
+        "amount": cash_str(goal.amount),
+        "account_id": goal.account_id,
+        "created_at": goal.created_at.isoformat(),
+    }
+
+
+@app.get("/api/goals/{goal_id}/plan")
+async def get_goal_plan(
+    goal_id: str,
+    store: InMemoryStore = Depends(get_store),
+    llm: LLMPort = Depends(get_llm),
+    events: EventLog = Depends(get_events),
+) -> dict:
+    goal = store.get_goal(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    cached = store.get_plan(goal_id)
+    if cached is not None:
+        return _serialize_plan(goal_id, cached)
+    planner = GoalPlanner(llm, events)
+    try:
+        plan = await planner.plan(goal.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    plan_dict = {
+        "summary_plain": plan.summary_plain,
+        "horizon_years": plan.horizon_years,
+        "risk_level": plan.risk,
+        "allocations": [
+            {"symbol": a.symbol, "weight": str(a.weight), "rationale": a.rationale}
+            for a in plan.allocations
+        ],
+    }
+    store.save_plan(goal_id, plan_dict)
+    return _serialize_plan(goal_id, plan_dict)
+
+
+@app.get("/api/radar/opportunities")
+async def radar_opportunities(
+    symbols: str | None = None,
+    goal_id: str | None = None,
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+    llm: LLMPort = Depends(get_llm),
+    events: EventLog = Depends(get_events),
+) -> dict:
+    watch: list[str] = []
+    if symbols:
+        watch = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    elif goal_id:
+        if store.get_goal(goal_id) is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        plan = store.get_plan(goal_id)
+        if plan:
+            watch = [str(a["symbol"]).upper() for a in plan["allocations"]]
+    if not watch:
+        watch = list(DEFAULT_WATCHLIST)
+    radar = OpportunityRadar(market, llm, events)
+    try:
+        opportunities = await radar.scan(watch)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "opportunities": [
+            {
+                "symbol": o.symbol,
+                "score": o.score,
+                "price": str(o.price),
+                "reasoning": o.reasoning,
+            }
+            for o in opportunities
+        ],
+        "provider": market.name,
+    }
+
+
+@app.post("/api/portfolio/invest")
+async def invest_portfolio(
+    body: InvestRequest,
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+    events: EventLog = Depends(get_events),
+) -> dict:
+    allocations: list[Allocation] = []
+    for item in body.allocations:
+        try:
+            weight = Decimal(item.weight)
+        except (InvalidOperation, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="weight must be a decimal number"
+            ) from exc
+        if weight <= 0 or weight > 1:
+            raise HTTPException(status_code=400, detail="weight must be between 0 and 1")
+        symbol = item.symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        allocations.append(Allocation(symbol, weight, ""))
+    if not allocations:
+        raise HTTPException(status_code=400, detail="at least one allocation is required")
+    pilot = PortfolioPilot(store, market, events)
+    try:
+        result = await pilot.invest(body.account_id, allocations)
+    except ValueError as exc:
+        if "account not found" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "account_id": result.account_id,
+        "trades": [
+            {
+                "side": t.side,
+                "symbol": t.symbol,
+                "quantity": t.quantity,
+                "price": t.price,
+            }
+            for t in result.trades
+        ],
+        "total_invested": cash_str(result.total_invested),
+    }
+
+
+@app.get("/api/goals/{goal_id}/portfolio")
+async def get_goal_portfolio(
+    goal_id: str,
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+) -> dict:
+    goal = store.get_goal(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return _serialize_portfolio(await _portfolio_view_port(goal.account_id, store, market))
+
+
+@app.post("/api/explain")
+async def explain_v2(
+    body: ExplainRequest,
+    store: InMemoryStore = Depends(get_store),
+    market: MarketDataPort = Depends(get_market_port),
+    llm: LLMPort = Depends(get_llm),
+    search: WebSearchPort = Depends(get_search),
+    events: EventLog = Depends(get_events),
+) -> dict:
+    explainer = Explainer(store, market, llm, search, events)
+    try:
+        return await explainer.explain(body.account_id, body.question)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/agents/activity")
+def agent_activity(
+    agent: str | None = None,
+    limit: int = 50,
+    events: EventLog = Depends(get_events),
+) -> dict:
+    listed = events.list(agent=agent, limit=max(limit, 1))
+    return {
+        "events": [
+            {
+                "id": e.id,
+                "agent": e.agent,
+                "kind": e.kind,
+                "payload": e.payload,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in listed
+        ]
+    }
