@@ -3,6 +3,7 @@
 import { Map as MapIcon, MessagesSquare, Navigation, Radar } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentEvent, AgentName } from "@/lib/finkow-client";
+import { TracingBeam } from "./effects";
 import { Card, LiveDot, SectionHeading, TypingDots } from "./ui";
 
 const AGENT_META: Record<AgentName, { icon: typeof Radar; tint: string }> = {
@@ -67,32 +68,34 @@ export function AgentFeed({ events }: { events: AgentEvent[] }) {
         {typingFor && <TypingDots label={`${typingFor} is working`} />}
       </div>
 
-      <ol className="space-y-1" aria-live="polite">
-        {shown.map((event, i) => {
-          const meta = AGENT_META[event.agent];
-          const Icon = meta.icon;
-          return (
-            <li
-              key={event.id}
-              className={`feed-item flex items-start gap-3 rounded-xl px-3 py-2.5 ${
-                i === 0 ? "bg-muted/50" : ""
-              }`}
-            >
-              <span
-                className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted ${meta.tint}`}
+      <TracingBeam>
+        <ol className="space-y-1 pl-9" aria-live="polite">
+          {shown.map((event, i) => {
+            const meta = AGENT_META[event.agent];
+            const Icon = meta.icon;
+            return (
+              <li
+                key={event.id}
+                className={`feed-item flex items-start gap-3 rounded-xl px-3 py-2.5 ${
+                  i === 0 ? "bg-muted/50" : ""
+                }`}
               >
-                <Icon className="h-4 w-4" aria-hidden />
-              </span>
-              <div className="min-w-0">
-                <p className="text-sm leading-relaxed text-foreground">{event.text}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {event.agent} · {event.at}
-                </p>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+                <span
+                  className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted ${meta.tint}`}
+                >
+                  <Icon className="h-4 w-4" aria-hidden />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm leading-relaxed text-foreground">{event.text}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {event.agent} · {event.at}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </TracingBeam>
     </Card>
   );
 }
