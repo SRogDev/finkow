@@ -17,9 +17,9 @@ A broker. No real-money execution in v2 — paper trading only. Real investing c
 
 ## Status
 
-- **v2 reframe (2026-10-06):** Finkow is now a **product** (Elastic License 2.0, source-available) that democratizes investing. AIsa (aisa.one) will power market data, LLMs, and web search behind clean provider interfaces.
-- **v1 (2026-09-26):** virtual-money sandbox (FastAPI + Next.js 16), verified end to end with 30 backend tests. Being reshaped into the v2 agent experience.
-- **Honest limits:** single-user, in-memory data (Supabase pending); AI reasoning arrives with the v2 agent build.
+- **v2 API (2026-10-06):** provider ports (MarketData/LLM/WebSearch) with AIsa + mock + free direct-fallback adapters and TTL quote caching; agent pipeline — GoalPlanner, OpportunityRadar, PortfolioPilot, Explainer — writing to an append-only event log; goal/radar/invest/explain/activity endpoints on the FastAPI backend. 62 backend tests green (30 v1 + 32 v2), verified against mock providers.
+- **v1 (2026-09-26):** virtual-money sandbox (FastAPI + Next.js 16), verified end to end. Now the paper-trading engine under the v2 agents.
+- **Honest limits:** single-user, in-memory data (Supabase pending); AIsa adapters are implemented against public docs but not yet live-tested (no API key in CI) — mocks are the verified path.
 - Brand: gold `#F59E0B`, Swiss-minimalist.
 
 ## Stack
