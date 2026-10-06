@@ -1,7 +1,7 @@
 [project]
 name = "finkow-api"
-version = "0.1.0"
-description = "Finkow FastAPI backend — virtual-money investing sandbox"
+version = "0.2.0"
+description = "Finkow FastAPI backend — AI investing agents on virtual money"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
