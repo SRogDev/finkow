@@ -1,6 +1,6 @@
 # Finkow
 
-**Open-source AI-native financial learning sandbox.** Learn finance by interacting with a realistic financial world — not by taking courses.
+**Source-available AI-native financial learning sandbox.** Learn finance by interacting with a realistic financial world — not by taking courses.
 
 > Explore → Ask → Simulate → Act → Observe → Understand → Learn → Explore again
 
@@ -16,8 +16,9 @@ Budgeting, expense tracking, or household finance. This is about **investing, we
 
 ## Status
 
-- **Scaffold (2026-09-26):** vision + `PLAN.md` + full product spec in `docs/product-context.md`. uv-managed Python deps (`pyproject.toml` + `uv.lock`).
-- **MVP build in progress** — Next.js web + FastAPI api scaffolds.
+- **MVP (2026-09-26):** FastAPI backend + Next.js 16 dashboard — virtual accounts ($100k), buy/sell at live prices (Yahoo/Coingecko), portfolio P&L and allocation. 30 backend tests passing, verified end to end.
+- **Honest limits:** data lives in memory until the Supabase schema is connected; the AI is a deterministic stub — the conversational interface is phase 2.
+- **Direction (2026-10-06):** Finkow is a **product**, not fully open source. Market data, LLMs, and web search will route through AIsa (aisa.one) behind clean provider interfaces, with direct providers as fallback.
 - Brand: gold `#F59E0B`, Swiss-minimalist.
 
 ## Stack
@@ -34,8 +35,8 @@ finkow/
 └── supabase/ # SQL schema
 ```
 
-MVP is still being built — see `PLAN.md` for the phases.
+See `PLAN.md` for the phases.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Elastic License 2.0 — see [LICENSE](LICENSE). Source-available: you may use, copy, modify, and distribute the code, but you may not provide it to third parties as a hosted or managed service.
