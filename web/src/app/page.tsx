@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AgentFeed } from "@/components/AgentFeed";
 import { Explainer } from "@/components/Explainer";
+import { InfiniteRail } from "@/components/effects";
 import { GoalInput } from "@/components/GoalInput";
 import { OpportunityCard } from "@/components/OpportunityCard";
 import { PlanCard } from "@/components/PlanCard";
@@ -97,7 +98,7 @@ export default function HomePage() {
           <SectionHeading
             eyebrow="Opportunity radar"
             title="What your agents see right now"
-            hint="Hand-picked for a calm, long-term plan. One tap puts paper money to work."
+            hint="Hand-picked for a calm, long-term plan. One tap puts paper money to work. Hover to pause the rail."
           />
         </div>
         {opportunities.length === 0 ? (
@@ -107,7 +108,7 @@ export default function HomePage() {
             ))}
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <InfiniteRail label="Opportunity rail" className="-mx-4 px-4 sm:-mx-6 sm:px-6">
             {opportunities.map((opp, i) => (
               <OpportunityCard
                 key={opp.id}
@@ -117,7 +118,7 @@ export default function HomePage() {
                 index={i}
               />
             ))}
-          </div>
+          </InfiniteRail>
         )}
       </section>
 
