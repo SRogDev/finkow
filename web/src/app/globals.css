@@ -1,20 +1,23 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@300;400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
-  /* Finkow v2 — calm dark "sentient UI". Gold (#F59E0B) is the brand accent. */
-  --color-background: #0b0b0d;
-  --color-card: #141417;
-  --color-muted: #1d1d21;
-  --color-foreground: #f5f4f0;
-  --color-muted-foreground: #a3a3ab;
+  /* Finkow v2.1 — "gold mine" system design. Wealth, solidity, calm. */
+  --color-background: #0a0a0b;
+  --color-card: #131315;
+  --color-muted: #1b1b1f;
+  --color-foreground: #f7f4ed;
+  --color-muted-foreground: #a39e93;
   --color-border: #26262c;
   --color-accent: #f59e0b;
   --color-on-accent: #1a1206;
+  --color-gold-light: #ffe9a8;
+  --color-gold-deep: #b45309;
   --color-success: #4ade80;
   --color-destructive: #f87171;
   --color-ring: #f59e0b;
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
 }
 
 body {
@@ -35,6 +38,29 @@ body {
 /* Tabular numerals for money. */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ */
+/* Gold system: gradient text, gradient surfaces, ornaments             */
+/* ------------------------------------------------------------------ */
+
+/** Rich gold gradient text for hero moments, CTAs, the portfolio pulse. */
+.gold-text {
+  background: linear-gradient(120deg, #ffe9a8 0%, #f59e0b 45%, #b45309 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/** Rich gold gradient surface for primary CTAs. */
+.gold-bg {
+  background: linear-gradient(135deg, #ffe9a8 0%, #f59e0b 45%, #b45309 100%);
+}
+
+/** Thin gold rule used as a bespoke divider ornament. */
+.gold-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(245, 158, 11, 0.55), transparent);
 }
 
 /* ------------------------------------------------------------------ */
@@ -140,6 +166,230 @@ body {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* v2.1 Aceternity-style elements (in-repo, product's own voice)        */
+/* ------------------------------------------------------------------ */
+
+/* Spotlight card: a gold light follows the cursor. JS sets
+   --spot-x / --spot-y on mousemove; no JS needed for the effect itself. */
+.spotlight {
+  position: relative;
+}
+
+.spotlight::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    480px circle at var(--spot-x, 50%) var(--spot-y, 50%),
+    rgba(245, 158, 11, 0.13),
+    transparent 65%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+
+.spotlight:hover::before {
+  opacity: 1;
+}
+
+/* Infinite-moving-cards rail. Items carry their own right padding so
+   translateX(-50%) loops seamlessly. Pauses on hover AND keyboard focus. */
+.marquee {
+  overflow: hidden;
+  /* Edge fade so cards dissolve into the dark — bespoke, calm. */
+  mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent);
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 55s linear infinite;
+}
+
+.marquee:hover .marquee-track,
+.marquee:focus-within .marquee-track {
+  animation-play-state: paused;
+}
+
+.marquee-item {
+  flex: 0 0 auto;
+  width: min(22rem, 82vw);
+  padding-right: 1rem;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* Tracing beam for the agent activity feed: a faint gold line with a
+   pulse of light travelling down it, like a live wire. */
+.tracing-beam {
+  position: relative;
+}
+
+.tracing-beam-line {
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 1.65rem;
+  width: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(245, 158, 11, 0.28),
+    rgba(245, 158, 11, 0.28),
+    transparent
+  );
+  pointer-events: none;
+}
+
+.tracing-beam-pulse {
+  position: absolute;
+  left: 1.65rem;
+  width: 2px;
+  height: 72px;
+  border-radius: 9999px;
+  background: linear-gradient(to bottom, transparent, #fbbf24, transparent);
+  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.8));
+  animation: beam-travel 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes beam-travel {
+  0% {
+    top: 0.5rem;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 4.5rem);
+    opacity: 0;
+  }
+}
+
+/* Lamp glow: layered gold light blooming from the top of the hero,
+   like a lamp warming the mine wall. Subtle breathing. */
+.lamp-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.lamp-glow-core {
+  position: absolute;
+  top: -12rem;
+  left: 50%;
+  height: 24rem;
+  width: 44rem;
+  transform: translateX(-50%);
+  border-radius: 9999px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(245, 158, 11, 0.22),
+    rgba(245, 158, 11, 0.06) 55%,
+    transparent 72%
+  );
+  filter: blur(28px);
+  animation: lamp-breathe 6s ease-in-out infinite;
+}
+
+.lamp-glow-halo {
+  position: absolute;
+  top: -6rem;
+  left: 50%;
+  height: 12rem;
+  width: 26rem;
+  transform: translateX(-50%);
+  border-radius: 9999px;
+  background: radial-gradient(ellipse at center, rgba(255, 233, 168, 0.16), transparent 70%);
+  filter: blur(20px);
+}
+
+@keyframes lamp-breathe {
+  0%,
+  100% {
+    opacity: 0.75;
+    transform: translateX(-50%) scaleX(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(-50%) scaleX(1.05);
+  }
+}
+
+/* Ambient gold aura behind the portfolio number — the mine breathing. */
+.gold-ambient {
+  animation: ambient-breathe 5s ease-in-out infinite;
+}
+
+@keyframes ambient-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.07);
+  }
+}
+
+/* Sheen sweep for gold CTAs on hover. */
+.btn-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.38) 50%,
+    transparent 60%
+  );
+  transform: translateX(-130%);
+  transition: transform 0.7s ease;
+  pointer-events: none;
+}
+
+.btn-sheen:hover::after {
+  transform: translateX(130%);
+}
+
+/* Slow drift for decorative background beams. */
+.beam-drift {
+  animation: beam-drift 14s ease-in-out infinite alternate;
+}
+
+@keyframes beam-drift {
+  from {
+    transform: translateX(-2%) skewX(-12deg);
+  }
+  to {
+    transform: translateX(2%) skewX(-12deg);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Reduced motion: every animation resolves to a calm static state.    */
+/* ------------------------------------------------------------------ */
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -154,5 +404,17 @@ body {
   .reveal {
     opacity: 1;
     transform: none;
+  }
+  /* The opportunity rail becomes a plain horizontal scroller. */
+  .marquee {
+    overflow-x: auto;
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+  .marquee-track {
+    animation: none;
+  }
+  .btn-sheen::after {
+    display: none;
   }
 }
