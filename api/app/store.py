@@ -7,7 +7,7 @@ domain code never touches storage details directly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
@@ -71,6 +71,36 @@ class Goal:
     created_at: datetime
 
 
+@dataclass
+class UserProfile:
+    """The LearningAgent's picture of the user: risk, horizon, preferences,
+    and a short decision history. One per account."""
+
+    account_id: str
+    risk: str = "medium"  # "low" | "medium" | "high"
+    horizon_years: float = 5.0
+    preferences: dict = field(default_factory=dict)
+    updated_at: datetime = field(default_factory=utcnow)
+
+
+@dataclass
+class ApprovalRequest:
+    """A pending human-confirmation decision for money movement.
+
+    Created by the InvestmentExecutor's propose step; resolved by confirm.
+    ``trades`` is a list of plain dicts (symbol/side/qty/est_price) so the
+    user sees exactly what they approve.
+    """
+
+    account_id: str
+    trades: list[dict]
+    total_usd: Decimal
+    status: str = "pending"  # "pending" | "approved" | "rejected" | "expired"
+    id: str = field(default_factory=new_id)
+    created_at: datetime = field(default_factory=utcnow)
+    decided_at: datetime | None = None
+
+
 class Store(Protocol):
     def create_account(self, email: str | None, initial_cash: Decimal = ...) -> Account: ...
     def get_account(self, account_id: str) -> Account | None: ...
@@ -86,6 +116,13 @@ class Store(Protocol):
     def get_goal(self, goal_id: str) -> Goal | None: ...
     def save_plan(self, goal_id: str, plan: dict) -> None: ...
     def get_plan(self, goal_id: str) -> dict | None: ...
+    def get_profile(self, account_id: str) -> UserProfile | None: ...
+    def save_profile(self, profile: UserProfile) -> UserProfile: ...
+    def save_approval(self, request: ApprovalRequest) -> ApprovalRequest: ...
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None: ...
+    def list_approvals(
+        self, account_id: str, status: str | None = ...
+    ) -> list[ApprovalRequest]: ...
 
 
 class InMemoryStore:
@@ -98,6 +135,8 @@ class InMemoryStore:
         self.snapshots: list[Snapshot] = []
         self.goals: dict[str, Goal] = {}
         self.plans: dict[str, dict] = {}
+        self.profiles: dict[str, UserProfile] = {}
+        self.approvals: dict[str, ApprovalRequest] = {}
 
     def create_account(
         self, email: str | None, initial_cash: Decimal = STARTING_CASH
@@ -158,3 +197,27 @@ class InMemoryStore:
 
     def get_plan(self, goal_id: str) -> dict | None:
         return self.plans.get(goal_id)
+
+    def get_profile(self, account_id: str) -> UserProfile | None:
+        return self.profiles.get(account_id)
+
+    def save_profile(self, profile: UserProfile) -> UserProfile:
+        profile.updated_at = utcnow()
+        self.profiles[profile.account_id] = profile
+        return profile
+
+    def save_approval(self, request: ApprovalRequest) -> ApprovalRequest:
+        self.approvals[request.id] = request
+        return request
+
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        return self.approvals.get(approval_id)
+
+    def list_approvals(
+        self, account_id: str, status: str | None = None
+    ) -> list[ApprovalRequest]:
+        return [
+            r
+            for r in self.approvals.values()
+            if r.account_id == account_id and (status is None or r.status == status)
+        ]
