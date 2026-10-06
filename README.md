@@ -1,41 +1,40 @@
 # Finkow
 
-**Source-available AI-native financial learning sandbox.** Learn finance by interacting with a realistic financial world — not by taking courses.
+**Source-available AI investing app.** AI agents invest for you, detect opportunities, and explain everything in plain language — no brokerage apps, no finance jargon.
 
-> Explore → Ask → Simulate → Act → Observe → Understand → Learn → Explore again
+> Tell Finkow your goal → agents research, invest (paper), and keep you posted.
 
 ## What it is
 
-- **Virtual-money sandbox with real market data** (stocks, ETFs, crypto…): buy, sell, build portfolios, watch real markets move your positions.
-- **AI as the primary interface**: ask what happened, why it happened, what-if scenarios, opportunity discovery — the AI calls structured financial operations, never touches raw state.
-- **Contextual learning**: concepts arrive inside your own activity, not as lessons.
+- **Investing autopilot**: state a goal in natural language; AI agents build the plan, detect opportunities, and manage a paper portfolio.
+- **Opportunity radar**: agents scan markets and the web for opportunities and bring them to you with plain-language reasoning.
+- **Sentient UI**: the app feels alive — proactive briefs, conversational portfolio, ambient status. Finance complexity stays hidden.
+- **Learn by watching**: every agent action is explained; financial intuition builds itself.
 
-## What it is not
+## What it is not (yet)
 
-Budgeting, expense tracking, or household finance. This is about **investing, wealth creation, and financial intuition through doing**. AI-operated actions and real-money mode are explicitly post-MVP.
+A broker. No real-money execution in v2 — paper trading only. Real investing comes later with brokerage connections and compliance.
 
 ## Status
 
-- **MVP (2026-09-26):** FastAPI backend + Next.js 16 dashboard — virtual accounts ($100k), buy/sell at live prices (Yahoo/Coingecko), portfolio P&L and allocation. 30 backend tests passing, verified end to end.
-- **Honest limits:** data lives in memory until the Supabase schema is connected; the AI is a deterministic stub — the conversational interface is phase 2.
-- **Direction (2026-10-06):** Finkow is a **product**, not fully open source. Market data, LLMs, and web search will route through AIsa (aisa.one) behind clean provider interfaces, with direct providers as fallback.
+- **v2 reframe (2026-10-06):** Finkow is now a **product** (Elastic License 2.0, source-available) that democratizes investing. AIsa (aisa.one) will power market data, LLMs, and web search behind clean provider interfaces.
+- **v1 (2026-09-26):** virtual-money sandbox (FastAPI + Next.js 16), verified end to end with 30 backend tests. Being reshaped into the v2 agent experience.
+- **Honest limits:** single-user, in-memory data (Supabase pending); AI reasoning arrives with the v2 agent build.
 - Brand: gold `#F59E0B`, Swiss-minimalist.
 
 ## Stack
 
-Next.js → FastAPI (financial domain logic) → Supabase → OpenRouter
+Next.js → FastAPI (agents + financial domain) → AIsa (models, market data, web search) → Supabase (pending)
 
 ## Structure
 
 ```
 finkow/
-├── web/      # Next.js app
-├── api/      # FastAPI financial domain logic (uv-managed)
-├── docs/     # product-context.md — the canonical spec
-└── supabase/ # SQL schema
+├── web/      # Next.js app (sentient UI)
+├── api/      # FastAPI: agents, paper trading, AIsa providers (uv-managed)
+├── docs/     # product-context.md (v1 spec), PRODUCT_REFRAME.md (v2 direction)
+└── supabase/ # SQL schema (pending connection)
 ```
-
-See `PLAN.md` for the phases.
 
 ## License
 
