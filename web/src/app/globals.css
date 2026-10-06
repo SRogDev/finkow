@@ -1,20 +1,20 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
-  /* Finkow — dark OLED fintech dashboard. Gold (#F59E0B) is the brand accent. */
-  --color-background: #020617;
-  --color-card: #0e1223;
-  --color-muted: #1a1e2f;
-  --color-foreground: #f8fafc;
-  --color-muted-foreground: #94a3b8;
-  --color-border: #334155;
+  /* Finkow v2 — calm dark "sentient UI". Gold (#F59E0B) is the brand accent. */
+  --color-background: #0b0b0d;
+  --color-card: #141417;
+  --color-muted: #1d1d21;
+  --color-foreground: #f5f4f0;
+  --color-muted-foreground: #a3a3ab;
+  --color-border: #26262c;
   --color-accent: #f59e0b;
-  --color-on-accent: #0f172a;
-  --color-success: #22c55e;
-  --color-destructive: #ef4444;
+  --color-on-accent: #1a1206;
+  --color-success: #4ade80;
+  --color-destructive: #f87171;
   --color-ring: #f59e0b;
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 body {
@@ -22,18 +22,122 @@ body {
   color: var(--color-foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 /* Visible focus state for keyboard navigation (gold ring). */
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+:where(a, button, input, select, textarea, [tabindex], summary):focus-visible {
   outline: 2px solid var(--color-ring);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
-/* Number tabular alignment for money columns. */
+/* Tabular numerals for money. */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sentient-UI motion: typing dots, live pulse, calm reveals            */
+/* ------------------------------------------------------------------ */
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dot-2 {
+  animation-delay: 0.15s;
+}
+
+.typing-dot-3 {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--color-success);
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5);
+  animation: live-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes live-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(74, 222, 128, 0);
+  }
+}
+
+/* Calm entrance: fades up once, then stays. Driven by .reveal-visible
+   which page components add on mount (no JS observer needed for the
+   simple case; content is never hidden from assistive tech). */
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+
+.reveal-visible .reveal,
+.reveal.reveal-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Soft shimmer for skeleton placeholders while agents "think". */
+.shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--color-muted) 40%,
+    var(--color-border) 50%,
+    var(--color-muted) 60%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-slide 1.6s linear infinite;
+}
+
+@keyframes shimmer-slide {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Feed items ease in as agents "arrive". */
+.feed-item {
+  animation: feed-in 0.45s ease both;
+}
+
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -43,6 +147,12 @@ body {
     /* biome-ignore lint/complexity/noImportantStyles: !important is required so the reduced-motion override beats component transition utilities. */
     animation-duration: 0.01ms !important;
     /* biome-ignore lint/complexity/noImportantStyles: see above. */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see above. */
     transition-duration: 0.01ms !important;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
   }
 }

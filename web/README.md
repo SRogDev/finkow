@@ -1,29 +1,34 @@
-# Finkow — Web Frontend
+# Finkow — Web Frontend (v2)
 
-Next.js (App Router) frontend for **Finkow**, the open-source AI-native
-financial learning sandbox. English-first UI, dark OLED fintech dashboard,
-gold (`#F59E0B`) brand accent.
+Next.js (App Router) frontend for **Finkow**, the source-available AI
+investing product. English UI, calm dark "sentient UI", gold (`#F59E0B`)
+brand accent, Inter type.
 
-## Pages
+## What it is
 
-- `/` — Dashboard: portfolio value (gold hero stat), total return + cash,
-  allocation bars, positions table, "Ask about your portfolio" AI panel, and
-  quick asset shortcuts (AAPL, MSFT, BTC, ETH).
-- `/assets/[symbol]` — Asset inspector: live quote card (price, provider,
-  as-of, stale badge), buy/sell form with estimated-cost preview, your current
-  position, and recent trades for the symbol.
+One conversational home — not a trading dashboard:
 
-On first load the app creates a sandbox account (`POST /api/accounts`,
-$100,000 virtual cash) and persists the `account_id` in `localStorage` so
-later visits reuse it. If the API is unreachable, every page shows an honest
-error state with a retry button — nothing is faked.
+- **Goal input** — "Grow $1,000 over 5 years, low risk" → a plain-language plan.
+- **Live agent activity feed** — Radar, Pilot, Planner, Explainer narrate what they do.
+- **Portfolio pulse** — your money as a living status, not a spreadsheet.
+- **Opportunity cards** — one-tap paper investing, reasoning attached to every card.
+- **Ask why** — grounded explanations citing the facts behind every move.
 
-## Money handling
+Zero finance jargon by default. The user never sees a ticker or a brokerage
+screen. All money is paper money.
 
-The API sends **all money as decimal strings**. The frontend never does
-money math: `src/lib/format.ts` only formats strings for display
-(`Intl.NumberFormat`, USD), and `src/lib/order.ts` only validates the
-quantity input.
+## API client
+
+`src/lib/finkow-client.ts` is the only way the UI talks to data. It maps 1:1
+to the v2 contract (`POST /goals`, `GET /goals/{id}/plan`,
+`GET /radar/opportunities`, `POST /portfolio/invest`, `GET /portfolio`,
+`POST /explain`, `GET /agents/activity`).
+
+- **Mock adapter (default)** — deterministic demo data, in-memory paper
+  portfolio. The UI is fully demonstrable with no backend.
+- **HTTP adapter** — set `NEXT_PUBLIC_FINKOW_ADAPTER=http` and
+  `NEXT_PUBLIC_FINKOW_API_URL=http://localhost:8000` to talk to the real
+  FastAPI backend when it lands.
 
 ## Run it
 
@@ -32,17 +37,12 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-Point at a different backend with:
-
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
-```
-
 ## Quality gates
 
 ```bash
 npm test           # unit tests (node:test, zero deps)
 npm run lint       # Biome check — must be clean
+npx tsc --noEmit   # strict typecheck — must be clean
 npm run build      # Next.js production build — must pass with zero errors
 ```
 
@@ -51,17 +51,18 @@ npm run build      # Next.js production build — must pass with zero errors
 ```
 src/
   app/
-    page.tsx                 # dashboard route
-    assets/[symbol]/page.tsx  # asset inspector route
+    page.tsx                 # the one conversational home
     layout.tsx               # header, footer, metadata
-    globals.css              # design tokens (dark OLED, IBM Plex Sans)
+    globals.css              # design tokens + sentient-UI motion
   components/
-    dashboard.tsx            # dashboard client components
-    inspector.tsx            # asset inspector client components
-    ui.tsx                   # shared primitives (cards, buttons, badges, states)
+    GoalInput.tsx            # natural-language goal hero
+    PlanCard.tsx             # plain-language plan + allocation bars
+    AgentFeed.tsx            # live agent activity with typing indicators
+    PortfolioPulse.tsx       # alive portfolio status, plain language
+    OpportunityCard.tsx      # opportunity + one-tap paper invest
+    Explainer.tsx            # "ask why" grounded explanations
+    ui.tsx                   # shared primitives (cards, buttons, disclosures)
   lib/
-    api.ts                   # typed FastAPI client + account bootstrap
-    format.ts                # display-only money formatting
-    order.ts                 # quantity validation
-    *.test.ts                # unit tests
+    finkow-client.ts         # typed v2 API client (mock default, HTTP ready)
+    finkow-client.test.ts    # client contract tests
 ```
