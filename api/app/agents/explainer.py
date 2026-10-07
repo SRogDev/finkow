@@ -9,6 +9,7 @@ deterministic grounded summary is returned as-is.
 from __future__ import annotations
 
 from app.agents.events import EventLog
+from app.governance.metering import CreditsExhausted
 from app.money import cash_str, qty_str
 from app.portfolio import PortfolioView, value_portfolio
 from app.ports import ChatMessage, LLMPort, MarketDataPort, ProviderError, WebSearchPort
@@ -50,6 +51,8 @@ class Explainer:
         for pos in positions:
             try:
                 quotes[pos.symbol] = await self._market.get_quote(pos.symbol)
+            except CreditsExhausted:
+                raise
             except ProviderError:
                 continue
         pv = value_portfolio(account, positions, quotes)
@@ -69,6 +72,8 @@ class Explainer:
                 system=_SYSTEM_PROMPT,
             )
             model = self._llm.name
+        except CreditsExhausted:
+            raise
         except ProviderError:
             answer, model = facts, "finkow-grounded"
         self._events.append(
@@ -114,6 +119,8 @@ class Explainer:
         for p in top:
             try:
                 results = await self._search.search(f"{p.symbol} stock news", max_results=2)
+            except CreditsExhausted:
+                raise
             except ProviderError:
                 continue
             for r in results:

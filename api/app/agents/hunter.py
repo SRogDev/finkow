@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from app.agents.events import EventLog
+from app.governance.metering import CreditsExhausted
 from app.market import SymbolNotFound
 from app.ports import ChatMessage, LLMPort, MarketDataPort, ProviderError
 
@@ -68,14 +69,20 @@ class OpportunityHunter:
                 continue
             try:
                 quote = await self._market.get_quote(sym)
+            except CreditsExhausted:
+                raise
             except (SymbolNotFound, ProviderError):
                 continue
             try:
                 fundamentals = await self._market.get_fundamentals(sym)
+            except CreditsExhausted:
+                raise
             except ProviderError:
                 fundamentals = None
             try:
                 news = await self._market.get_news(sym, limit=1)
+            except CreditsExhausted:
+                raise
             except ProviderError:
                 news = []
             pe = fundamentals.pe_ratio if fundamentals and fundamentals.pe_ratio else None
@@ -94,6 +101,8 @@ class OpportunityHunter:
                 json_mode=True,
             )
             opportunities = self._validate(json.loads(raw))
+        except CreditsExhausted:
+            raise
         except (ProviderError, json.JSONDecodeError) as exc:
             raise ValueError(f"hunter could not rank opportunities: {exc}") from exc
         self._events.append(

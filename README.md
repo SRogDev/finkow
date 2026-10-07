@@ -13,10 +13,11 @@
 
 ## What it is not (yet)
 
-A broker. No real-money execution in v2.1 — paper trading only, with the live-trading path intentionally disabled. Stripe is wired for product billing (flagged); the brokerage is an interface with a mock adapter. Real investing comes later with brokerage keys and compliance.
+A broker. No real-money execution in v2.2 — paper trading only, with the live-trading path intentionally disabled. Stripe is wired for product billing (flagged) and for API credits that agents spend on paid AIsa calls (metered, capped); the brokerage is an interface with a mock adapter. Real investing comes later with brokerage keys and compliance.
 
 ## Status
 
+- **v2.2 API (2026-10-06):** agent-money layer — users buy API credits with their card (Stripe Checkout, $5/$20/$50 packs; webhook fulfills the append-only credits ledger, idempotent), agents spend them on paid AIsa calls with per-call metering (actual cost from AIsa's cost header), balance + daily/monthly spending caps enforced before each call, market data falls back to free quotes and LLM/search failures return HTTP 402 with a top-up link. Full simulated E2E verified with exact balances. 187 backend tests green.
 - **v2.1 API (2026-10-06):** orchestrator harness (single entry, 4 specialists — LearningAgent, OpportunityHunter, FinancialAnalyst, InvestmentExecutor — confidence routing, checkpoints, adapted from Polygrow patterns) + governance (output verifier, audit log, rate limiter, PII filter) + human confirmation gate for trades + Stripe billing skeleton (flagged) + Alpaca-shaped brokerage interface (mock). Full simulated investment flow verified end to end with exact balances. 154 backend tests green.
 - **v2 API (2026-10-06):** provider ports (MarketData/LLM/WebSearch) with AIsa + mock + free direct-fallback adapters and TTL quote caching; agent pipeline writing to an append-only event log; goal/radar/invest/explain/activity endpoints on the FastAPI backend.
 - **v1 (2026-09-26):** virtual-money sandbox (FastAPI + Next.js 16), verified end to end. Now the paper-trading engine under the agents.

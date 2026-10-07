@@ -33,6 +33,7 @@ from app.agents.events import EventLog
 from app.agents.planner import Allocation  # re-exported for callers
 from app.brokerage import LiveTradingDisabledError
 from app.governance.audit import AuditLog
+from app.governance.metering import CreditsExhausted
 from app.market import MarketDataError
 from app.money import qty_str, to_cash, to_qty
 from app.portfolio import value_portfolio
@@ -389,6 +390,8 @@ class InvestmentExecutor:
         for pos in positions:
             try:
                 quotes[pos.symbol] = await self._market.get_quote(pos.symbol)
+            except CreditsExhausted:
+                raise
             except (MarketDataError, ProviderError):
                 continue
         pv = value_portfolio(account, positions, quotes)

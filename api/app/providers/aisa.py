@@ -27,9 +27,24 @@ from app.ports import (
 BASE = "https://api.aisa.one"
 DEFAULT_MODEL = os.environ.get("AISA_MODEL", "gpt-4o-mini")
 
+#: Response header in which AIsa reports the real per-call cost.
+COST_HEADER = "x-aisa-customer-cost-micros-usd"
+
 
 def _auth_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _cost_from_headers(headers) -> int | None:
+    """Real per-call cost in micro-USD, or None when the gateway omits it."""
+    raw = headers.get(COST_HEADER)
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def _close_of_bar(bar: dict) -> Decimal | None:
@@ -66,6 +81,10 @@ class AisaMarketData:
     ) -> None:
         self._key = api_key
         self._client = client or build_client()
+        #: Real cost of the last call in micro-USD (None until the first
+        #: call, or when the gateway omits the cost header). Read by the
+        #: metering layer to debit the exact amount.
+        self.last_cost_micros_usd: int | None = None
 
     async def get_quote(self, symbol: str) -> Quote:
         sym = symbol.upper().strip()
@@ -82,6 +101,7 @@ class AisaMarketData:
             resp = await self._client.get(url, headers=_auth_headers(self._key), timeout=15.0)
         except httpx.HTTPError as exc:
             raise ProviderError(f"aisa market data unreachable: {exc}") from exc
+        self.last_cost_micros_usd = _cost_from_headers(resp.headers)
         if resp.status_code == 404:
             raise SymbolNotFound(sym)
         try:
@@ -129,6 +149,9 @@ class AisaLLM:
         self._key = api_key
         self._client = client or build_client()
         self.model = model
+        #: Real cost of the last call in micro-USD (None until the first
+        #: call, or when the gateway omits the cost header).
+        self.last_cost_micros_usd: int | None = None
 
     async def complete(
         self,
@@ -153,6 +176,7 @@ class AisaLLM:
             )
             resp.raise_for_status()
             data = resp.json()
+            self.last_cost_micros_usd = _cost_from_headers(resp.headers)
             return str(data["choices"][0]["message"]["content"]).strip()
         except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"aisa llm failed: {exc}") from exc
@@ -172,6 +196,9 @@ class AisaWebSearch:
     def __init__(self, api_key: str, client: httpx.AsyncClient | None = None) -> None:
         self._key = api_key
         self._client = client or build_client()
+        #: Real cost of the last call in micro-USD (None until the first
+        #: call, or when the gateway omits the cost header).
+        self.last_cost_micros_usd: int | None = None
 
     async def search(self, query: str, *, max_results: int = 5) -> list[SearchResult]:
         try:
@@ -183,6 +210,7 @@ class AisaWebSearch:
             )
             resp.raise_for_status()
             data = resp.json()
+            self.last_cost_micros_usd = _cost_from_headers(resp.headers)
         except httpx.HTTPError as exc:
             raise ProviderError(f"aisa web search failed: {exc}") from exc
         raw = data.get("results", []) if isinstance(data, dict) else []
