@@ -1,5 +1,6 @@
 import { Coins } from "lucide-react";
 import type { Metadata } from "next";
+import { HeaderAuth } from "@/components/HeaderAuth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,9 +25,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </span>
               <span className="font-display text-xl font-semibold tracking-tight">Finkow</span>
             </a>
-            <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
-              Paper money
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+                Paper money
+              </span>
+              <HeaderAuth />
+            </div>
           </div>
         </header>
 
