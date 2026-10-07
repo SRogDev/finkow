@@ -47,6 +47,24 @@ to the v2 contract (`POST /goals`, `GET /goals/{id}/plan`,
   `NEXT_PUBLIC_FINKOW_API_URL=http://localhost:8000` to talk to the real
   FastAPI backend when it lands.
 
+## Auth (Supabase)
+
+Optional. The app builds and runs **without** Supabase configured — auth is
+then gracefully disabled and everyone sees the app (the pre-auth behavior).
+
+To enable sign-in, create a Supabase project and set:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://xyzcompany.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...
+```
+
+What you get: `@supabase/ssr` session handling (`lib/supabase/`), a root
+`proxy.ts` (Next.js 16 convention) that refreshes the session and redirects
+anonymous visitors to `/login`, a gold-styled sign-in gate (`/login` —
+email+password and magic link), `/auth/callback` + `/auth/confirm` +
+`/auth/signout` routes, and a sign-in/sign-out slot in the header.
+
 ## Run it
 
 ```bash
@@ -68,10 +86,15 @@ npm run build      # Next.js production build — must pass with zero errors
 ```
 src/
   app/
-    page.tsx                 # the one conversational home
-    layout.tsx               # header, footer, metadata
+    page.tsx                 # the one conversational home (server gate → HomeApp)
+    login/                   # sign-in gate: page.tsx, LoginForm.tsx, actions.ts
+    auth/                    # callback/, confirm/, signout/ route handlers
+    layout.tsx               # header (with HeaderAuth slot), footer, metadata
+    proxy.ts                 # root proxy: Supabase session refresh (Next 16)
     globals.css              # design tokens + sentient-UI motion
   components/
+    HomeApp.tsx              # the client conversational home
+    HeaderAuth.tsx           # async server component: sign-in link / sign-out form
     GoalInput.tsx            # natural-language goal hero
     PlanCard.tsx             # plain-language plan + allocation bars
     AgentFeed.tsx            # live agent activity with typing indicators
@@ -85,4 +108,6 @@ src/
     finkow-client.test.ts    # client contract tests
     rail.ts                  # duplicateForLoop helper for the infinite rail
     rail.test.ts             # rail loop tests
+    supabase/                # env.ts, client.ts, server.ts, proxy.ts (+ env tests)
+    auth/                    # validation.ts (+ tests) — auth input validation
 ```
