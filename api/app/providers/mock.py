@@ -70,6 +70,8 @@ class MockMarketData:
     """Deterministic quotes/fundamentals/news. Provider name is ``mock``."""
 
     name = "mock"
+    #: Mocks are free: the metering layer never debits for these calls.
+    last_cost_micros_usd: int | None = 0
 
     def __init__(self) -> None:
         # Mutable copy so tests can simulate market movement.
@@ -134,6 +136,8 @@ class MockLLM:
     """
 
     name = "mock"
+    #: Mocks are free: the metering layer never debits for these calls.
+    last_cost_micros_usd: int | None = 0
 
     async def complete(
         self,
@@ -210,6 +214,8 @@ class MockWebSearch:
     """Canned search results. Provider name ``mock``."""
 
     name = "mock"
+    #: Mocks are free: the metering layer never debits for these calls.
+    last_cost_micros_usd: int | None = 0
 
     async def search(self, query: str, *, max_results: int = 5) -> list[SearchResult]:
         q = query.lower()

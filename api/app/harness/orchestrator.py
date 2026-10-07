@@ -30,7 +30,9 @@ from app.agents.executor import InvestmentExecutor
 from app.agents.explainer import Explainer
 from app.agents.hunter import OpportunityHunter
 from app.agents.learning import LearningAgent
+from app.billing.credits import CreditsLedger, credits_to_usd, get_ledger
 from app.governance.audit import AuditLog
+from app.governance.metering import CreditsExhausted
 from app.governance.verifier import OutputVerifier
 from app.harness.router import classify_intent, route
 from app.harness.state import RunState
@@ -79,6 +81,7 @@ class Orchestrator:
         events: EventLog | None = None,
         audit: AuditLog | None = None,
         verifier: OutputVerifier | None = None,
+        ledger: CreditsLedger | None = None,
     ) -> None:
         self._store = store
         self._market = market
@@ -87,6 +90,7 @@ class Orchestrator:
         self._events = events or EventLog()
         self._audit = audit or AuditLog()
         self._verifier = verifier or OutputVerifier()
+        self._ledger = ledger or get_ledger()
         self._learning = LearningAgent(llm, store, self._events)
         self._hunter = OpportunityHunter(market, llm, self._events)
         self._analyst = FinancialAnalyst(market, llm, self._events)
@@ -125,6 +129,16 @@ class Orchestrator:
             await self._stage(state, "verify", self._verify)
             await self._stage(state, "synthesize", self._synthesize)
             await self._stage(state, "memory_write", self._memory_write)
+        except CreditsExhausted:
+            # Money blocks are never degraded silently: the endpoint maps
+            # this to HTTP 402 with a top-up link.
+            state.error = "credits exhausted"
+            self._events.append(
+                "orchestrator",
+                "orchestrator.credits_exhausted",
+                {"run_id": state.run_id, "intent": state.intent},
+            )
+            raise
         except Exception as exc:  # stage failure: record, never raise
             state.error = f"{type(exc).__name__}: {exc}"
             self._events.append(
@@ -262,6 +276,25 @@ class Orchestrator:
                 "intent": state.intent,
                 "stages": state.stages,
             },
+        )
+        details: dict = {"run_id": state.run_id, "intent": state.intent}
+        if state.account_id is not None and state.checkpoints:
+            # Money trail for this run: credits in/out live in the ledger;
+            # the summary lands in the audit log next to the run.
+            try:
+                started = datetime.fromisoformat(state.checkpoints[0]["at"])
+            except (KeyError, ValueError):
+                started = None
+            if started is not None:
+                spent = self._ledger.spent_since(state.account_id, started)
+                details["credits_spent"] = spent
+                details["credits_spent_usd"] = str(credits_to_usd(spent))
+                details["credits_balance"] = self._ledger.balance(state.account_id)
+        self._audit.append(
+            actor="orchestrator",
+            action="credits.run_summary",
+            account_id=state.account_id,
+            details=details,
         )
         self._audit.append(
             actor="orchestrator",

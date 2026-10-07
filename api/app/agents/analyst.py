@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.agents.events import EventLog
+from app.governance.metering import CreditsExhausted
 from app.market import SymbolNotFound
 from app.ports import ChatMessage, LLMPort, MarketDataPort, ProviderError
 
@@ -65,14 +66,20 @@ class FinancialAnalyst:
             raise ValueError("symbol is required")
         try:
             quote = await self._market.get_quote(sym)
+        except CreditsExhausted:
+            raise
         except (SymbolNotFound, ProviderError) as exc:
             raise ValueError(f"unknown symbol: {sym}") from exc
         try:
             fundamentals = await self._market.get_fundamentals(sym)
+        except CreditsExhausted:
+            raise
         except ProviderError:
             fundamentals = None
         try:
             news = await self._market.get_news(sym, limit=3)
+        except CreditsExhausted:
+            raise
         except ProviderError:
             news = []
 
@@ -137,6 +144,8 @@ class FinancialAnalyst:
                 [ChatMessage(role="user", content=facts)],
                 system=_SYSTEM_PROMPT,
             )
+        except CreditsExhausted:
+            raise
         except ProviderError:
             pe_word = f"P/E {pe}" if pe is not None else "no P/E available"
             return (

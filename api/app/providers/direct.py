@@ -15,6 +15,8 @@ class DirectQuoteAdapter:
     """MarketDataPort over the v1 provider chain (CoinGecko/Stooq/Yahoo)."""
 
     name = "direct"
+    #: The free fallback costs nothing: the metering layer never debits it.
+    last_cost_micros_usd: int | None = 0
 
     def __init__(self, inner: CachedMarketData | None = None) -> None:
         self._inner = inner or CachedMarketData()

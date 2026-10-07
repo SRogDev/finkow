@@ -11,6 +11,7 @@ Paper money only — there is no real-money code path in this service.
 
 from __future__ import annotations
 
+import json
 import os
 from decimal import Decimal, InvalidOperation
 
@@ -26,9 +27,17 @@ from app.agents.learning import LearningAgent
 from app.agents.pilot import PortfolioPilot
 from app.agents.planner import Allocation, GoalPlanner, parse_goal
 from app.agents.radar import OpportunityRadar
+from app.billing.credits import CREDIT_PACKS, credits_to_usd, get_ledger
 from app.billing.stripe_billing import BillingNotConfigured, StripeBilling
 from app.brokerage import BrokeragePort, MockBrokerage, OrderSide
 from app.governance.audit import AuditLog
+from app.governance.metering import (
+    CreditsExhausted,
+    account_context,
+    reset_account,
+    reset_metering,
+    set_account,
+)
 from app.governance.pii_filter import PIIFilter
 from app.governance.rate_limiter import RateLimiter, wrap_port
 from app.harness.orchestrator import Orchestrator, RunRequest
@@ -75,6 +84,39 @@ app.add_middleware(
     allow_headers=["content-type"],
     max_age=600,
 )
+
+
+@app.middleware("http")
+async def _account_context_middleware(request: Request, call_next):
+    """Bind the billed account for metering (one context per request).
+
+    The account id can ride in a path parameter (``account_id`` or a goal
+    that resolves to one), a query parameter, or the JSON body. Endpoints
+    that resolve the account indirectly (e.g. ``/api/executor/confirm`` via
+    its approval) set the context explicitly instead.
+    """
+    account_id: str | None = None
+    if "account_id" in request.path_params:
+        account_id = request.path_params["account_id"]
+    elif "goal_id" in request.path_params:
+        goal = _store.get_goal(request.path_params["goal_id"])
+        account_id = goal.account_id if goal is not None else None
+    elif "account_id" in request.query_params:
+        account_id = request.query_params["account_id"] or None
+    elif request.method in ("POST", "PUT", "PATCH"):
+        try:
+            body = await request.body()
+            if body:
+                payload = json.loads(body)
+                value = payload.get("account_id") if isinstance(payload, dict) else None
+                account_id = value if isinstance(value, str) and value else None
+        except Exception:
+            account_id = None
+    token = set_account(account_id)
+    try:
+        return await call_next(request)
+    finally:
+        reset_account(token)
 
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "VTI", "BND", "BTC", "ETH", "SOL"]
 
@@ -189,7 +231,7 @@ def get_learning(
 
 
 def reset_state() -> None:
-    """Test hook: fresh store, market, ports, events, audit, brokerage."""
+    """Test hook: fresh store, market, ports, events, audit, brokerage, credits."""
     global _store, _market, _market_port, _llm, _search, _events, _audit, _brokerage
     _store = InMemoryStore()
     _market = None
@@ -199,6 +241,7 @@ def reset_state() -> None:
     _events = EventLog()
     _audit = AuditLog()
     _brokerage = None
+    reset_metering()
 
 
 # ---------------------------------------------------------------- requests
@@ -538,6 +581,8 @@ async def get_goal_plan(
     planner = GoalPlanner(llm, events)
     try:
         plan = await planner.plan(goal.text)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     plan_dict = {
@@ -576,6 +621,8 @@ async def radar_opportunities(
     radar = OpportunityRadar(market, llm, events)
     try:
         opportunities = await radar.scan(watch)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
@@ -661,6 +708,8 @@ async def explain_v2(
     explainer = Explainer(store, market, llm, search, events)
     try:
         return await explainer.explain(body.account_id, body.question)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -687,6 +736,22 @@ def agent_activity(
 
 
 # ------------------------------------------------- v2.1 routes: harness, gate, billing
+
+
+def _credits_402() -> HTTPException:
+    """402 when a paid provider call was refused (empty balance or cap).
+
+    The agent never silently overspends: instead of degrading to a wrong
+    answer, the request fails with a top-up path.
+    """
+    return HTTPException(
+        status_code=402,
+        detail={
+            "message": "credits exhausted: agents cannot make paid provider calls",
+            "top_up": "/api/billing/credits/checkout",
+            "packs": "/api/billing/credits/packs",
+        },
+    )
 
 
 class HarnessRunRequest(BaseModel):
@@ -751,6 +816,8 @@ async def analyze_symbol(
 ) -> dict:
     try:
         analysis = await orchestrator.analyze(symbol)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         if "unknown symbol" in str(exc):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -775,6 +842,8 @@ async def harness_run(
         result = await orchestrator.run(
             RunRequest(text=body.text, account_id=body.account_id)
         )
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -797,6 +866,8 @@ async def executor_propose(
     allocations = _allocations_or_400(body.allocations)
     try:
         approval = await executor.propose(body.account_id, allocations)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
         if "account not found" in str(exc):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -814,12 +885,18 @@ async def executor_propose(
 async def executor_confirm(
     body: ConfirmRequest,
     executor: InvestmentExecutor = Depends(get_executor),
+    store: InMemoryStore = Depends(get_store),
 ) -> dict:
+    approval = store.get_approval(body.approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+    # The request carries no account id; bill the approval's account.
     try:
-        return await executor.confirm(body.approval_id, body.approved)
+        with account_context(approval.account_id):
+            return await executor.confirm(body.approval_id, body.approved)
+    except CreditsExhausted:
+        raise _credits_402() from None
     except ValueError as exc:
-        if "approval not found" in str(exc):
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -869,10 +946,114 @@ def billing_checkout(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+class CreditsCheckoutRequest(BaseModel):
+    account_id: str
+    pack_id: str
+    success_url: str
+    cancel_url: str
+    customer_email: str | None = None
+
+
+@app.post("/api/billing/credits/checkout")
+def credits_checkout(
+    body: CreditsCheckoutRequest,
+    billing: StripeBilling = Depends(get_billing),
+    store: InMemoryStore = Depends(get_store),
+) -> dict:
+    """Sell a credit pack: Stripe takes the card, the webhook credits the ledger.
+
+    Credits are what agents spend on paid AIsa calls (1 credit = $0.001).
+    """
+    if store.get_account(body.account_id) is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    try:
+        return billing.create_credits_checkout_session(
+            pack_id=body.pack_id,
+            account_id=body.account_id,
+            success_url=body.success_url,
+            cancel_url=body.cancel_url,
+            customer_email=body.customer_email,
+        )
+    except BillingNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/billing/credits/packs")
+def credits_packs() -> dict:
+    """The credit packs on sale. Public catalog — no Stripe key needed."""
+    return {
+        "packs": [
+            {
+                "pack_id": pack.pack_id,
+                "usd": f"{pack.usd_cents / 100:.2f}",
+                "credits": pack.credits,
+            }
+            for pack in CREDIT_PACKS.values()
+        ]
+    }
+
+
+@app.get("/api/billing/credits/balance")
+def credits_balance(
+    account_id: str, store: InMemoryStore = Depends(get_store)
+) -> dict:
+    if store.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    balance = get_ledger().balance(account_id)
+    return {
+        "account_id": account_id,
+        "balance_credits": balance,
+        "balance_usd": str(credits_to_usd(balance)),
+    }
+
+
+def _fulfill_credits_event(event: dict, audit: AuditLog) -> None:
+    """Fulfill a credit-pack purchase: idempotent ledger credit + audit entry.
+
+    ``checkout.session.completed`` with ``metadata.kind == "credits"``.
+    Everything else (subscriptions, etc.) is left to the subscription flow.
+    """
+    if event.get("type") != "checkout.session.completed":
+        return
+    obj = (event.get("data") or {}).get("object") or {}
+    meta = obj.get("metadata") or {}
+    if meta.get("kind") != "credits":
+        return
+    account_id = meta.get("account_id")
+    try:
+        credits = int(meta.get("credits") or 0)
+    except (TypeError, ValueError):
+        credits = 0
+    if not account_id or credits <= 0:
+        return
+    entry = get_ledger().credit_unique(
+        str(obj.get("id") or ""),
+        account_id,
+        credits,
+        tool="stripe",
+        meta={"pack_id": meta.get("pack_id"), "session_id": obj.get("id")},
+    )
+    if entry is not None:
+        audit.append(
+            actor="billing",
+            action="credits.purchase",
+            account_id=account_id,
+            details={
+                "credits": credits,
+                "credits_usd": str(credits_to_usd(credits)),
+                "pack_id": meta.get("pack_id"),
+                "entry_id": entry.id,
+            },
+        )
+
+
 @app.post("/api/billing/webhook")
 async def billing_webhook(
     request: Request,
     billing: StripeBilling = Depends(get_billing),
+    audit: AuditLog = Depends(get_audit),
 ) -> dict:
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")
@@ -884,8 +1065,9 @@ async def billing_webhook(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Skeleton: authenticity verified; fulfillment (granting the subscription)
-    # is product logic owned by the caller.
+    # Credit-pack purchases fulfill into the credits ledger (idempotent);
+    # subscription events keep flowing through the subscription skeleton.
+    _fulfill_credits_event(event, audit)
     return {"received": True, "type": event.get("type")}
 
 

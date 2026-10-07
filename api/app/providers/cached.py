@@ -3,7 +3,9 @@
 - ``CachedMarketDataPort``: TTL cache in front of any port. Quotes are the hot
   path — cache them aggressively regardless of provider (cost + latency).
 - ``FallbackMarketData``: try primary, fall back to secondary on any
-  ``MarketDataError`` (provider down, bad shape, unknown symbol there).
+  ``MarketDataError`` or ``ProviderError`` (provider down, bad shape, rate
+  limit or credits exhausted) — so paid-port failures keep quotes flowing
+  free instead of breaking the request.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from app.market import MarketDataError, Quote
-from app.ports import Fundamentals, MarketDataPort, NewsItem
+from app.ports import Fundamentals, MarketDataPort, NewsItem, ProviderError
 
 
 def _default_ttl() -> int:
@@ -67,23 +69,23 @@ class FallbackMarketData:
     async def get_quote(self, symbol: str) -> Quote:
         try:
             return await self._primary.get_quote(symbol)
-        except MarketDataError:
+        except (MarketDataError, ProviderError):
             return await self._secondary.get_quote(symbol)
 
     async def get_fundamentals(self, symbol: str) -> Fundamentals | None:
         try:
             result = await self._primary.get_fundamentals(symbol)
-        except MarketDataError:
+        except (MarketDataError, ProviderError):
             result = None
         if result is None:
             try:
                 return await self._secondary.get_fundamentals(symbol)
-            except MarketDataError:
+            except (MarketDataError, ProviderError):
                 return None
         return result
 
     async def get_news(self, symbol: str, limit: int = 5) -> list[NewsItem]:
         try:
             return await self._primary.get_news(symbol, limit)
-        except MarketDataError:
+        except (MarketDataError, ProviderError):
             return await self._secondary.get_news(symbol, limit)

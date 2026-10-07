@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 from app.agents.events import EventLog
+from app.governance.metering import CreditsExhausted
 from app.governance.pii_filter import PIIFilter
 from app.money import to_cash
 from app.ports import ChatMessage, LLMPort, ProviderError
@@ -208,6 +209,8 @@ class LearningAgent:
                 json_mode=True,
             )
             plan = self._validate(json.loads(raw), spec)
+        except CreditsExhausted:
+            raise
         except (ProviderError, json.JSONDecodeError) as exc:
             raise ValueError(f"planner could not build a valid plan: {exc}") from exc
         self._events.append(
@@ -266,6 +269,8 @@ class LearningAgent:
                 ],
                 system=_TEACH_SYSTEM,
             )
+        except CreditsExhausted:
+            raise
         except ProviderError:
             lesson = (
                 f"{concept.strip()}: in plain language — spreading money across "

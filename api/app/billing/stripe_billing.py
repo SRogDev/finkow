@@ -16,6 +16,8 @@ from __future__ import annotations
 import importlib
 import os
 
+from app.billing.credits import CREDIT_PACKS
+
 
 class BillingNotConfigured(Exception):
     """Stripe is not configured (no STRIPE_SECRET_KEY)."""
@@ -81,6 +83,58 @@ class StripeBilling:
         else:
             sid, url = session.id, session.url
         return {"id": sid, "url": url, "mode": mode}
+
+    def create_credits_checkout_session(
+        self,
+        *,
+        pack_id: str,
+        account_id: str,
+        success_url: str,
+        cancel_url: str,
+        customer_email: str | None = None,
+    ) -> dict:
+        """One-off payment session selling a credit pack (agent spending money).
+
+        Uses inline ``price_data`` — no pre-created Stripe Price IDs needed.
+        ``metadata.kind == "credits"`` is what the webhook uses to route
+        fulfillment into the credits ledger instead of the subscription flow.
+        """
+        try:
+            pack = CREDIT_PACKS[pack_id]
+        except KeyError as exc:
+            raise ValueError(f"unknown credit pack: {pack_id}") from exc
+        stripe = self._stripe()
+        params: dict = {
+            "mode": "payment",
+            "line_items": [
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "unit_amount": pack.usd_cents,
+                        "product_data": {
+                            "name": f"Finkow API credits — {pack.credits:,} credits"
+                        },
+                    },
+                    "quantity": 1,
+                }
+            ],
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "metadata": {
+                "kind": "credits",
+                "account_id": account_id,
+                "pack_id": pack.pack_id,
+                "credits": str(pack.credits),
+            },
+        }
+        if customer_email:
+            params["customer_email"] = customer_email
+        session = stripe.checkout.Session.create(**params)
+        if isinstance(session, dict):
+            sid, url = session.get("id"), session.get("url")
+        else:
+            sid, url = session.id, session.url
+        return {"id": sid, "url": url, "mode": "payment", "pack_id": pack_id}
 
     def handle_webhook(
         self, *, payload: bytes, signature: str, webhook_secret: str | None

@@ -38,10 +38,14 @@ api/
       verifier.py   # schema + safety checks (PII, guaranteed-returns language)
       audit.py      # append-only audit log for money-affecting actions
       rate_limiter.py  # paid-call budget for AIsa ports (+ wrap_port helper)
+      metering.py   # v2.2: MeteredPort + SpendingGovernor — agents spend
+                    #   credits on paid AIsa calls, capped before each call
       pii_filter.py # detect + redact PII in stored user text
     billing/
       stripe_billing.py  # Stripe Checkout + webhooks, behind STRIPE_SECRET_KEY.
                          # Product money only — never market orders.
+      credits.py    # v2.2: append-only credits ledger (purchases + debits),
+                    #   credit packs, micros<->credits conversion
     brokerage.py    # BrokeragePort (Alpaca-shaped) + MockBrokerage.
                     # submit_live_order always raises: live trading disabled.
     trading.py      # paper buy/sell — shared by v1 orders and the executor
@@ -102,6 +106,40 @@ FINKOW_CORS_ORIGINS=https://finkow.example.com .venv/bin/uvicorn app.main:app --
   always raises `LiveTradingDisabledError`. Live keys are a later step with
   regulatory review — not this release.
 
+## Agent money: credits (v2.2)
+
+Users buy API credits with their card; agents spend them on paid AIsa calls.
+1 credit = $0.001.
+
+- **Buy**: `POST /api/billing/credits/checkout` creates a Stripe Checkout
+  Session for a credit pack ($5 -> 5,000 / $20 -> 20,000 / $50 -> 50,000
+  credits). `POST /api/billing/webhook` fulfills `checkout.session.completed`
+  into the ledger — idempotent per Stripe session id, so replays never
+  double-credit. `GET /api/billing/credits/packs` lists packs;
+  `GET /api/billing/credits/balance?account_id=…` shows the balance.
+  Behind `STRIPE_SECRET_KEY` (503 when unset); subscription billing is
+  untouched.
+- **Ledger** (`app/billing/credits.py`): append-only `purchase`/`debit`
+  entries; balance is always derived, never stored.
+- **Metering** (`app/governance/metering.py`): paid AIsa ports are wrapped in
+  `MeteredPort` — inside the quote cache and the market fallback chain, so
+  cached quotes and free fallbacks are never billed. After each call the
+  ACTUAL cost comes from AIsa's `x-aisa-customer-cost-micros-usd` header
+  (estimate when the header is absent); mocks and the direct fallback report
+  $0 and are never debited. The billed account is bound per request.
+- **Spending governor**: balance plus daily/monthly caps
+  (`FINKOW_DAILY_CAP_CREDITS` default 1000 = $1/day,
+  `FINKOW_MONTHLY_CAP_CREDITS` default 10000 = $10/month; 0 disables), checked
+  BEFORE the provider call against a cost estimate. Optional per-call
+  `max_price_usd` on the metered port. When a call would exceed balance or a
+  cap, AIsa is never called: market data falls back to free direct quotes,
+  while LLM/search failures surface as **HTTP 402** with a top-up link —
+  agents never silently overspend. `CreditsExhausted` is a `ProviderError`, so
+  existing fallback and retry behavior keeps working.
+- **Audit**: every debit is a ledger entry (tool, micro-USD, timestamp); each
+  orchestrator run writes a `credits.run_summary` entry and purchases write
+  `credits.purchase`.
+
 ## Design notes
 
 - **Money is exact**: `Decimal` everywhere, quantized at boundaries (`money.py`).
@@ -155,7 +193,10 @@ FINKOW_CORS_ORIGINS=https://finkow.example.com .venv/bin/uvicorn app.main:app --
 | POST | `/api/executor/confirm` | approve/reject a pending approval |
 | GET | `/api/audit` | audit log (`?account_id=`, `?action=`) |
 | POST | `/api/billing/checkout` | Stripe Checkout Session (503 unless configured) |
-| POST | `/api/billing/webhook` | Stripe webhook verification skeleton |
+| POST | `/api/billing/webhook` | Stripe webhook verification + credits fulfillment |
+| POST | `/api/billing/credits/checkout` | credit pack Checkout Session (503 unless configured) |
+| GET | `/api/billing/credits/packs` | credit pack catalog |
+| GET | `/api/billing/credits/balance?account_id=…` | credits balance |
 | GET | `/api/brokerage/account` | mock brokerage account (paper) |
 | POST | `/api/brokerage/orders` | mock market order (fills immediately) |
 | GET | `/api/brokerage/orders/{id}` | mock order lookup |
