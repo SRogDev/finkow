@@ -80,11 +80,11 @@ export function AssetInspectorClient({ symbol }: { symbol: string }) {
   return (
     <div className="flex flex-col gap-6">
       <Link
-        href="/"
+        href="/portfolio"
         className="inline-flex w-fit cursor-pointer items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-200 hover:text-accent"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
-        Back to dashboard
+        Back to portfolio
       </Link>
 
       <div className="grid gap-6 lg:grid-cols-5">
@@ -292,8 +292,8 @@ function OrderForm({
               className={`cursor-pointer rounded-md px-4 py-2 text-sm font-semibold capitalize transition-all duration-200 ${
                 side === s
                   ? s === "buy"
-                    ? "bg-success text-background"
-                    : "bg-destructive text-background"
+                    ? "gold-bg text-on-accent"
+                    : "border border-destructive/60 bg-destructive/10 text-destructive"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -302,13 +302,17 @@ function OrderForm({
           ))}
         </fieldset>
 
-        <Field label="Quantity" hint="Fractional quantities allowed (up to 8 decimals).">
+        <Field
+          label="Quantity"
+          hint="Fractional quantities allowed (up to 8 decimals)."
+          htmlFor="order-quantity"
+        >
           <input
+            id="order-quantity"
             value={quantityInput}
             onChange={(e) => setQuantityInput(e.target.value)}
             inputMode="decimal"
             placeholder="1"
-            aria-label="Quantity"
             className={inputClassName}
           />
         </Field>
@@ -344,6 +348,10 @@ function OrderForm({
         <PrimaryButton type="submit" disabled={submitting}>
           {submitting ? "Placing order…" : `${side === "buy" ? "Buy" : "Sell"} ${symbol}`}
         </PrimaryButton>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Paper order — fills instantly at the quoted price. Virtual money only, never real
+          investing.
+        </p>
       </form>
 
       {result && (

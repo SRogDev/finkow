@@ -36,9 +36,11 @@ export function PlanCard({ plan }: { plan: Plan }) {
           ))}
         </div>
 
-        <div className="mt-6 rounded-xl bg-muted/60 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
-          {plan.monthlyNote}
-        </div>
+        {plan.monthlyNote && (
+          <div className="mt-6 rounded-xl bg-muted/60 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+            {plan.monthlyNote}
+          </div>
+        )}
 
         <WhyDetails
           points={[

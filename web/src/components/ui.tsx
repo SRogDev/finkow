@@ -1,5 +1,6 @@
-import { Check, ChevronDown, Info } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Clock, Info, RotateCcw } from "lucide-react";
 import type { ReactNode } from "react";
+import { formatSignedMoney, formatSignedPercent } from "@/lib/format";
 
 /* ------------------------------------------------------------------ */
 /* Layout primitives                                                   */
@@ -183,6 +184,161 @@ export function WhyDetails({ points, riskNote }: { points: string[]; riskNote?: 
         </p>
       )}
     </details>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Card title, loading / error states                                   */
+/* ------------------------------------------------------------------ */
+
+/** Card heading with an optional right-side action slot (badges, links). */
+export function CardTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h3 className="font-display text-xl font-semibold tracking-tight text-foreground">
+        {children}
+      </h3>
+      {action}
+    </div>
+  );
+}
+
+/** Calm loading state: gold typing dots + label, never a spinner wall. */
+export function LoadingState({ label }: { label: string }) {
+  return (
+    <div
+      className="flex items-center gap-3 rounded-2xl border border-border bg-card px-6 py-10"
+      role="status"
+      aria-label={label}
+    >
+      <TypingDots label={label} />
+      <p className="text-sm text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+
+/** Honest error state: what happened, one retry action. */
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div
+      className="flex flex-col items-start gap-3 rounded-2xl border border-destructive/30 bg-card px-6 py-8"
+      role="alert"
+    >
+      <p className="flex items-start gap-2 text-sm leading-relaxed text-foreground">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden />
+        <span>{message}</span>
+      </p>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors duration-200 hover:border-accent/60 hover:text-accent"
+        >
+          <RotateCcw className="h-4 w-4" aria-hidden />
+          Try again
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Form field + shared input class                                     */
+/* ------------------------------------------------------------------ */
+
+/** Input class per MASTER.md: 16px text (no iOS zoom), gold focus ring. */
+export const inputClassName =
+  "w-full rounded-xl border border-border bg-background px-4 py-2.5 text-base text-foreground placeholder:text-muted-foreground/60 transition-colors duration-200 focus:border-accent focus:outline-none focus:ring-[3px] focus:ring-accent/25 disabled:opacity-60";
+
+/** Labeled form field with helper hint. Pass htmlFor + a matching input id. */
+export function Field({
+  label,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  htmlFor?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="block">
+      <label htmlFor={htmlFor} className="mb-1.5 block text-sm font-medium text-foreground">
+        {label}
+      </label>
+      {children}
+      {hint && (
+        <span className="mt-1.5 block text-xs leading-relaxed text-muted-foreground">{hint}</span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Financial display: signed values, badges (green/red = movement only)*/
+/* ------------------------------------------------------------------ */
+
+/**
+ * Signed money in financial semantics: green = positive movement,
+ * red = negative, neutral = zero. Accepts API decimal strings or numbers.
+ */
+export function SignedMoney({ value }: { value: string | number }) {
+  const text = typeof value === "number" ? formatSignedUsd(value) : formatSignedMoney(value);
+  const n = Number(value);
+  const tone =
+    !Number.isFinite(n) || n === 0
+      ? "text-muted-foreground"
+      : n > 0
+        ? "text-success"
+        : "text-destructive";
+  return <span className={`tnum font-medium ${tone}`}>{text}</span>;
+}
+
+/** Signed percent with the same financial semantics as SignedMoney. */
+export function SignedPercent({ value }: { value: string | number }) {
+  const text =
+    typeof value === "number"
+      ? `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(2)}%`
+      : formatSignedPercent(value);
+  const n = Number(value);
+  const tone =
+    !Number.isFinite(n) || n === 0
+      ? "text-muted-foreground"
+      : n > 0
+        ? "text-success"
+        : "text-destructive";
+  return <span className={`tnum font-medium ${tone}`}>{text}</span>;
+}
+
+/** Marks a quote that is older than the freshness window. */
+export function StaleBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
+      <Clock className="h-3 w-3" aria-hidden />
+      Stale quote
+    </span>
+  );
+}
+
+/**
+ * Whether an AI answer is grounded in the user's real portfolio data.
+ * Gold = grounded; quiet = model-only answer.
+ */
+export function GroundedBadge({ grounded }: { grounded: boolean }) {
+  if (grounded) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-medium text-accent">
+        <Check className="h-3 w-3" aria-hidden />
+        Grounded in your data
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+      <Info className="h-3 w-3" aria-hidden />
+      Model answer
+    </span>
   );
 }
 

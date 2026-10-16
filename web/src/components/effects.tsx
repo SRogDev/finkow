@@ -1,14 +1,14 @@
 "use client";
 
 import { Children, type ReactNode, useRef } from "react";
-import { duplicateForLoop } from "@/lib/rail";
 
 /* ------------------------------------------------------------------ */
 /* v2.1 Aceternity-style elements — implemented in-repo, Tailwind +    */
 /* CSS only. Decorative layers are aria-hidden; content stays clean.   */
 /* ------------------------------------------------------------------ */
 
-/** Lamp glow blooming from the top of the hero — the mine warming up. */
+/** Lamp glow blooming from the top of the hero — static warmth, no ambient
+ * motion (the interface stays calm when idle). */
 export function LampGlow() {
   return (
     <div className="lamp-glow" aria-hidden>
@@ -48,32 +48,11 @@ export function SpotlightCard({
 }
 
 /**
- * Tracing beam for the agent activity feed: a faint gold line with a
- * pulse of light travelling down it. Decorative; the list is untouched.
+ * Calm snap rail for discoveries. No auto-motion: the interface stays
+ * still when idle (VISUAL_DIRECTION.md) and the user scrolls or swipes
+ * at their own pace. Keyboard users tab through real cards.
  */
-export function TracingBeam({
-  children,
-  className = "",
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`tracing-beam ${className}`}>
-      <div className="tracing-beam-line" aria-hidden />
-      <div className="tracing-beam-pulse" aria-hidden />
-      {children}
-    </div>
-  );
-}
-
-/**
- * Infinite-moving-cards rail. The list is duplicated for a seamless loop;
- * the second copy is aria-hidden so screen readers hear each card once.
- * Pauses on hover and on keyboard focus; becomes a plain scroller under
- * reduced motion (see globals.css).
- */
-export function InfiniteRail({
+export function ScrollRail({
   children,
   label,
   className = "",
@@ -82,16 +61,12 @@ export function InfiniteRail({
   label: string;
   className?: string;
 }) {
-  const items = Children.toArray(children);
-  const half = items.length;
-  const looped = duplicateForLoop(items);
-
   return (
-    <section className={`marquee ${className}`} aria-label={label}>
-      <div className="marquee-track">
-        {looped.map((child, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: the loop is a static duplicated sequence by design.
-          <div key={i} className="marquee-item" aria-hidden={i >= half || undefined}>
+    <section className={`scroll-rail ${className}`} aria-label={label}>
+      <div className="flex gap-4">
+        {Children.map(children, (child, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the rail is a static ordered sequence.
+          <div key={i} className="scroll-rail-item">
             {child}
           </div>
         ))}

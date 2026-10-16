@@ -1,39 +1,54 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AgentFeed } from "@/components/AgentFeed";
+import { ActivityInbox } from "@/components/ActivityInbox";
 import { Explainer } from "@/components/Explainer";
-import { InfiniteRail } from "@/components/effects";
+import { ScrollRail } from "@/components/effects";
 import { GoalInput } from "@/components/GoalInput";
 import { OpportunityCard } from "@/components/OpportunityCard";
 import { PlanCard } from "@/components/PlanCard";
-import { PortfolioPulse } from "@/components/PortfolioPulse";
-import { SectionHeading } from "@/components/ui";
+import { PortfolioIndicator } from "@/components/PortfolioIndicator";
+import { ErrorState, SectionHeading } from "@/components/ui";
+import { getStoredAccountId } from "@/lib/api";
+import { getAccessToken } from "@/lib/auth/token";
 import {
-  type AgentEvent,
   createFinkowClient,
   type Opportunity,
   type Plan,
   type Portfolio,
 } from "@/lib/finkow-client";
 
+const EXPLORE_SYMBOLS = ["AAPL", "MSFT", "BTC", "ETH"];
+
 /**
- * Finkow v2 home: one conversational surface.
- * Goal in → plan out → agents work → opportunities → explanations.
- * No tickers, no order forms, no brokerage screens.
+ * Finkow home: a conversational workspace, not a dashboard.
+ * Portfolio indicator → natural-language input → plan → activity inbox →
+ * discoveries → ask why. No tickers, no order forms, no brokerage screens.
  *
- * Client component: the whole surface is interactive (forms, live feed,
- * invest actions). The server gate in app/page.tsx decides whether this
- * renders at all — nothing non-serializable crosses that boundary.
+ * Client component: the whole surface is interactive (forms, invest
+ * actions). The server gate in app/page.tsx decides whether this renders
+ * at all — nothing non-serializable crosses that boundary.
  */
 export function HomeApp() {
-  const client = useMemo(() => createFinkowClient(), []);
+  // Sync, no network: the sandbox account id when this browser has one.
+  const [accountId] = useState<string | null>(() => getStoredAccountId());
+  const client = useMemo(
+    () =>
+      createFinkowClient({
+        accountId: accountId ?? undefined,
+        getToken: getAccessToken,
+      }),
+    [accountId],
+  );
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [activity, setActivity] = useState<AgentEvent[]>([]);
   const [booting, setBooting] = useState(true);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [lastGoal, setLastGoal] = useState<string | null>(null);
   const [investedIds, setInvestedIds] = useState<ReadonlySet<string>>(new Set());
   const [mounted, setMounted] = useState(false);
 
@@ -43,20 +58,18 @@ export function HomeApp() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([client.getPortfolio(), client.getOpportunities(), client.getActivity()])
-      .then(([p, opps, events]) => {
-        if (cancelled) return;
-        setPortfolio(p);
-        setOpportunities(opps);
-        setActivity(events);
-      })
-      .catch(() => {
-        /* The feed and pulse render their own loading states; a total
-           failure still leaves the goal input usable. */
-      })
-      .finally(() => {
-        if (!cancelled) setBooting(false);
-      });
+    // Independent reads — one slow source must not block the others.
+    Promise.allSettled([client.getPortfolio(), client.getOpportunities()]).then((results) => {
+      if (cancelled) return;
+      const [p, opps] = results;
+      if (p.status === "fulfilled") {
+        setPortfolio(p.value);
+      } else {
+        setPortfolioError("Your portfolio couldn't be loaded.");
+      }
+      if (opps.status === "fulfilled") setOpportunities(opps.value);
+      setBooting(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -64,12 +77,14 @@ export function HomeApp() {
 
   const submitGoal = async (text: string) => {
     setPlanning(true);
+    setPlanError(null);
+    setPlan(null);
+    setLastGoal(text);
     try {
       const goal = await client.createGoal(text);
-      // Independent once the goal exists — fetch in parallel, not in sequence.
-      const [nextPlan, events] = await Promise.all([client.getPlan(goal.id), client.getActivity()]);
-      setPlan(nextPlan);
-      setActivity(events);
+      setPlan(await client.getPlan(goal.id));
+    } catch {
+      setPlanError("Couldn't build your plan right now. Your words are safe — try again.");
     } finally {
       setPlanning(false);
     }
@@ -77,44 +92,55 @@ export function HomeApp() {
 
   const invest = async (opportunityId: string, amountUsd: number): Promise<string> => {
     const result = await client.invest(opportunityId, amountUsd);
-    const [p, events] = await Promise.all([client.getPortfolio(), client.getActivity()]);
+    const p = await client.getPortfolio();
     setPortfolio(p);
-    setActivity(events);
     setInvestedIds((prev) => new Set(prev).add(opportunityId));
     return result.message;
   };
 
   return (
     <div className={`flex flex-col gap-10 ${mounted ? "reveal-visible" : ""}`}>
+      <PortfolioIndicator portfolio={portfolio} loading={booting} error={portfolioError} />
+
       <GoalInput onSubmit={submitGoal} busy={planning} />
 
-      {(plan || planning) && (
+      {(plan || planning || planError) && (
         <div aria-live="polite">
-          {planning && !plan ? <PlanSkeleton /> : plan && <PlanCard plan={plan} />}
+          {planning && !plan ? (
+            <PlanSkeleton />
+          ) : plan ? (
+            <PlanCard plan={plan} />
+          ) : planError ? (
+            <ErrorState
+              message={planError}
+              onRetry={lastGoal ? () => submitGoal(lastGoal) : undefined}
+            />
+          ) : null}
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <PortfolioPulse portfolio={portfolio} loading={booting} />
-        <AgentFeed events={activity} />
-      </div>
+      <ActivityInbox />
 
       <section aria-labelledby="opps-heading">
         <div id="opps-heading">
           <SectionHeading
             eyebrow="Opportunity radar"
-            title="What your agents see right now"
-            hint="Hand-picked for a calm, long-term plan. One tap puts paper money to work. Hover to pause the rail."
+            title="What Finkow sees right now"
+            hint="Hand-picked for a calm, long-term plan. One tap puts virtual money to work."
           />
         </div>
-        {opportunities.length === 0 ? (
-          <div className="grid gap-4 sm:grid-cols-2">
+        {booting ? (
+          <div className="grid gap-4 sm:grid-cols-2" aria-hidden>
             {[0, 1].map((i) => (
-              <div key={i} className="shimmer h-64 rounded-2xl" aria-hidden />
+              <div key={i} className="shimmer h-64 rounded-2xl" />
             ))}
           </div>
+        ) : opportunities.length === 0 ? (
+          <p className="rounded-2xl border border-border bg-card px-6 py-8 text-center text-sm text-muted-foreground">
+            No opportunities right now. Finkow will surface them here when they appear.
+          </p>
         ) : (
-          <InfiniteRail label="Opportunity rail" className="-mx-4 px-4 sm:-mx-6 sm:px-6">
+          <ScrollRail label="Opportunity rail" className="-mx-4 px-4 sm:-mx-6 sm:px-6">
             {opportunities.map((opp, i) => (
               <OpportunityCard
                 key={opp.id}
@@ -124,11 +150,29 @@ export function HomeApp() {
                 index={i}
               />
             ))}
-          </InfiniteRail>
+          </ScrollRail>
         )}
       </section>
 
       <Explainer client={client} />
+
+      <nav aria-label="Explore" className="flex flex-wrap items-center gap-2">
+        <Link
+          href="/portfolio"
+          className="inline-flex cursor-pointer items-center rounded-full border border-accent/40 bg-accent/10 px-4 py-1.5 text-sm font-medium text-accent transition-colors duration-200 hover:bg-accent/20"
+        >
+          Portfolio
+        </Link>
+        {EXPLORE_SYMBOLS.map((symbol) => (
+          <Link
+            key={symbol}
+            href={`/assets/${symbol}`}
+            className="inline-flex cursor-pointer items-center rounded-full border border-border px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors duration-200 hover:border-accent/40 hover:text-foreground"
+          >
+            {symbol}
+          </Link>
+        ))}
+      </nav>
     </div>
   );
 }

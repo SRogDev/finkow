@@ -6,7 +6,7 @@
  * isSupabaseConfigured() first).
  */
 import { createBrowserClient } from "@supabase/ssr";
-import { isSupabaseConfigured, supabaseEnv } from "./env";
+import { isSupabaseConfigured, supabaseEnv } from "./env.ts";
 
 export function createClient() {
   if (!isSupabaseConfigured()) return null;
