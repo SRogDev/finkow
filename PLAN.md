@@ -40,19 +40,20 @@ runs; no commits, no live API calls (no keys on this machine).
 
 ## Implementation checklist
 
-### (a) Doable with current architecture
+### (a) Doable with current architecture — all done 2026-10-16
 
-- [ ] Fix web build: resolve legacy v1 components (`dashboard.tsx`, `inspector.tsx`)
-  vs v2.1 gold UI — rewrite to gold primitives or remove the `/assets/[symbol]`
-  route; unblock `tsc` + `next build`
-- [ ] Add Real/Experimental mode separation in the domain (SPEC S8): mode on
-  accounts/orders/credits/holdings; tests proving simulated ops cannot
-  contaminate real state
-- [ ] Order lifecycle: explicit states (proposed/submitted/filled/rejected/
-  cancelled/failed), idempotency keys, timeout reconciliation
-- [ ] API auth: verify Supabase JWTs on FastAPI endpoints; enforce
-  user→account ownership on every `account_id`
-- [ ] Persist audit/event/credits logs (currently lost on restart)
+- [x] Fix web build: legacy v1 components adapted to gold primitives
+  (`/assets/[symbol]` kept working); `tsc` + `next build` green
+- [x] Real/Experimental mode separation in the domain (SPEC S8): mode on
+  accounts/orders/holdings/transactions/approvals; `CrossModeError`;
+  contamination tests both directions; real-mode execution → 501
+- [x] Order lifecycle: explicit states (draft/awaiting_authorization/
+  submitted/partially_filled/filled/rejected/cancelled/failed), idempotency
+  keys, reconcile-never-assumes-failure
+- [x] API auth: Supabase JWT verification on FastAPI endpoints; enforce
+  user→account ownership (403); per-user daily trade limit
+- [x] Audit/event/credits logs persisted (SQLite default via `FINKOW_STORE`;
+  survive restarts) + Supabase skeleton adapter
 - [x] Resolve LICENSE/docs mismatch: `LICENSE` file is MIT; README and
   `docs/PRODUCT_REFRAME.md` claimed Elastic 2.0 → corrected in Phase 1
 - [x] Update `api/README.md` test count (187, not 154)
@@ -63,8 +64,9 @@ runs; no commits, no live API calls (no keys on this machine).
   `docs/VISUAL_DIRECTION.md`, `docs/MCP_SPEC.md`, `docs/KEY_SUCCESS.md`;
   clean `design-system/finkow/MASTER.md` (remove green `#22C55E` CTA,
   IBM Plex Sans, trading-dashboard patterns); rewrite README honestly
-- [ ] MCP implementation (SPEC S18) — only after auth + mode separation;
-  expose implemented capabilities only
+- [x] MCP implementation (SPEC S18) — stdio server, 12 tools reusing the
+  backend, API-key auth (read / read+propose), experimental-only, no
+  execution tools; `docs/MCP_SPEC.md` rewritten as implemented spec
 
 ### (b) Needs a new integration or credentials
 
