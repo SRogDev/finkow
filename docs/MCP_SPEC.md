@@ -1,14 +1,16 @@
-# Finkow — MCP Spec (intended external-agent interface)
+# Finkow — MCP Spec (implemented external-agent interface)
 
-> Intended spec, 2026-10-16. **MCP is not implemented.** No MCP server, no
-> MCP tool endpoints, and no external-agent authentication exist in this
-> build (Phase 0 audit: "API surface for external clients — partially
-> implemented; no MCP, no API keys, no auth").
+> **IMPLEMENTED 2026-10-16** (local build; commit pending — GitHub access
+> suspended). The MCP server exposes **only implemented capabilities**,
+> reusing the backend domain modules directly — no parallel financial
+> domain, no invented provider behavior. Transport: MCP stdio (JSON-RPC
+> 2.0) via the official `mcp` Python SDK (v2 `MCPServer`), structured
+> output per tool.
 >
-> This document defines the intended capabilities, tool contracts, and
-> safeguards so implementation (a later phase, after API auth + Real/Experimental
-> mode separation) reuses the backend domain instead of inventing a parallel one.
-> Nothing here describes working functionality.
+> What remains *intended but not implemented* is listed at the bottom.
+> Nothing in this document describes working functionality that isn't —
+> simulated/paper state is labeled `virtual: true` in every financial
+> response.
 
 ## Purpose
 
@@ -17,100 +19,175 @@ agent, an advisor's tooling — interact with Finkow through MCP with **the
 same trusted capabilities humans get through the conversational interface**,
 and the same rules. One domain, two doors.
 
-## Tool groups (adapted to the existing domain)
+## Running the server
 
-Tools are organized around outcomes, not internal functions. Proposed names
-map to existing backend capabilities:
+```bash
+cd api
+uv run python -m app.mcp.server
+```
 
-| Group | Candidate tool | Maps to (today's REST) | Implemented? |
+The server speaks JSON-RPC 2.0 over stdio (`initialize`, `tools/list`,
+`tools/call`, proper error codes). Any MCP client (Claude Desktop,
+`mcp` CLI, custom agents) can launch it as a subprocess.
+
+## Authentication
+
+- `FINKOW_MCP_API_KEYS`: comma-separated entries, each
+  `<secret>[:<perms>[:<user_id>]]`.
+  - `<secret>`: the key the client presents in the per-call `api_key`
+    argument (stdio has no headers). Compared in constant time
+    (`hmac.compare_digest`).
+  - `<perms>`: `read` (default) or `read+propose`. `read` covers every
+    read-only tool; `read+propose` additionally allows
+    `prepare_investment_proposal`. **An agent must not grant itself
+    permissions** — keys and permission sets are operator configuration.
+  - `<user_id>`: the user the key acts on behalf of (defaults to the dev
+    user). Account ownership is enforced against this user exactly as in
+    the REST app (`require_account_owner`).
+- No keys configured → every call is rejected (safe by default).
+- Keys, internal prompts, and raw credentials never appear in tool
+  results, logs, or audit entries (audit stores an arguments hash only).
+
+## Tool catalog
+
+All twelve tools, their permission, and read-only vs mutating marks:
+
+| Tool | Permission | Mutates? | Maps to (backend) |
 |---|---|---|---|
-| Portfolio | `get_portfolio` | `GET /api/accounts/{id}/portfolio`, `/api/goals/{id}/portfolio` | yes (paper) |
-| Portfolio | `get_positions` | portfolio positions | yes (paper) |
-| Portfolio | `get_transaction_history` | `GET /api/accounts/{id}/transactions`, `/api/accounts/{id}/history` | yes (paper) |
-| Market/research | `get_quote` | `GET /api/quotes/{symbol}` | yes |
-| Market/research | `get_opportunities` | `GET /api/radar/opportunities` | yes |
-| Market/research | `analyze_symbol` | `GET /api/analyze/{symbol}` | yes |
-| Market/research | `web_search` | WebSearchPort (AIsa) | yes (key-gated) |
-| Goals | `create_goal` / `get_goal_plan` | `POST /api/goals`, `GET /api/goals/{id}/plan` | yes |
-| Explanation | `explain` | `POST /api/explain` | yes |
-| Investment preparation | `propose_trades` | `POST /api/executor/propose` (dry-run, nothing moves) | yes (paper) |
-| Investment preparation | `get_approval_status` | pending approvals | yes (paper) |
-| Investment preparation | `confirm_trades` | `POST /api/executor/confirm` | yes (paper) |
-| Brokerage (real) | `submit_live_order` | `BrokeragePort.submit_live_order` | **NO — raises `LiveTradingDisabledError`** |
+| `get_portfolio` | read | no | portfolio valuation (`value_portfolio`) |
+| `get_positions` | read | no | portfolio positions, valued at quotes |
+| `get_transaction_history` | read | no | `store.list_transactions` |
+| `get_portfolio_performance` | read | no | `store.list_snapshots` |
+| `get_market_data` | read | no | primary market-data port (labeled `mock` without an AIsa key) |
+| `search_investment_opportunities` | read | no | `OpportunityRadar.scan` |
+| `analyze_asset` | read | no | `Orchestrator.analyze` (FinancialAnalyst) |
+| `analyze_portfolio` | read | no | computed diagnostics from `value_portfolio` |
+| `get_activity_history` | read | no | `EventLog.list` |
+| `prepare_investment_proposal` | **read+propose** | dry-run only | `InvestmentExecutor.propose` → DRAFT orders, `pending_authorization` |
+| `validate_investment_action` | read | no | dry risk-control check (no orders, no money) |
+| `get_order_status` | read | no | order or approval status (incl. draft orders) |
 
-## Authorization model
+Name mapping from the earlier intended draft: `get_quote` →
+`get_market_data`, `get_opportunities` → `search_investment_opportunities`,
+`analyze_symbol` → `analyze_asset`, `propose_trades` →
+`prepare_investment_proposal`, `get_approval_status` → `get_order_status`.
+`web_search`, goals, and `explain` remain REST-only for now (see below).
 
-1. **Client authentication first.** Every MCP client authenticates (API keys
-   scoped to an OAuth-style client; exact mechanism to be defined at
-   implementation). No anonymous clients.
-2. **User authorization.** Tools act on behalf of a user; the server verifies
-   the client may act for that user and enforces user→account ownership on
-   every account-scoped call.
-3. **Tool permissions (least privilege).** Permissions are granted
-   explicitly per client: a read-only client can never submit or cancel
-   orders; a research client cannot touch the confirmation gate. **An agent
-   must not grant itself permissions** — permission changes require the
-   user's explicit action through a separate channel.
-4. **Mode restrictions.** Every tool call carries the mode (Real /
-   Experimental); Experimental credentials cannot touch Real state and vice
-   versa. Until Real Mode exists, all credentials are Experimental-only.
-5. **Rate limits.** Per-client and per-user limits on paid operations (LLM /
-   market data), enforced before provider calls; same spending governor as
-   the human app (balance + daily/monthly caps).
-6. **Validation.** All tool arguments validated server-side (schema + safety,
-   including the ban on guaranteed-return language in generated content).
+## The execution boundary (non-negotiable)
 
-## Execution safeguards
+- **There is deliberately NO execution tool.** Real execution does not
+  exist in this build (`submit_live_order` raises
+  `LiveTradingDisabledError` by design), and paper submission stays behind
+  the human confirmation gate.
+- `prepare_investment_proposal` returns `status: "pending_authorization"`
+  with what the human must approve (in-app, 15-minute expiry) — never a
+  false executed claim. The tool description itself states this boundary.
+- `validate_investment_action` is a dry check; passing it is not a
+  guarantee of execution.
 
-- **Idempotent execution.** Mutating tools accept an idempotency key;
-  retries with the same key never duplicate the operation.
-- **Confirmations return pending, never false "executed".** The flow is
-  research → proposal → human authorization → execution. A confirmation that
-  awaits the user returns `status: "pending_authorization"`, never a claim
-  of execution.
-- **Human confirmation gate binds agents too.** The orchestrator's
-  propose/confirm gate (15-minute approval expiry) applies identically to
-  MCP-originated trade proposals. Agents propose; the human (or the user's
-  pre-authorized policy, when such policies exist) disposes.
-- **No secrets in client code, logs, or model-visible responses.** Keys,
-   internal prompts, and raw credentials never appear in tool results.
-- **Audit logging.** Every money-affecting MCP call is appended to the audit
-  log with client id, user id, tool, arguments hash, outcome, and mode.
+## Authorization model (implemented)
 
-## What is NOT exposed
+1. **Client authentication first.** Every call carries `api_key`;
+   unknown keys are rejected (`-32001`); failures are audit-logged.
+2. **User authorization.** Tools act on behalf of the key's `user_id`;
+   account ownership is enforced on every account-scoped call.
+3. **Tool permissions (least privilege).** A read-only key calling
+   `prepare_investment_proposal` gets `-32002` permission denied.
+4. **Mode restrictions.** Every tool takes `mode` (default
+   `experimental`); `real` is rejected (`-32004`). Every response carries
+   `mode` and `virtual: true` — simulated state can never be mistaken for
+   real money.
+5. **Rate limits.** Per-key fixed-window budget
+   (`FINKOW_MCP_RATE_LIMIT_PER_MIN`, default 60/min), reusing
+   `governance/rate_limiter.py`; exhaustion returns `-32003`.
+6. **Validation.** All arguments validated server-side (strict pydantic
+   input/output schemas; `-32602`/`-32006` on bad input), including the
+   ban on guaranteed-return language in generated content.
+7. **Audit logging.** Every tool call — success, rejection, or failure —
+   is appended to the audit log with actor `mcp:<key_id>`, the tool,
+   an arguments hash, outcome, and mode. No secrets stored.
+8. **Idempotency.** `prepare_investment_proposal` accepts an
+   `idempotency_key`; retries return the original proposal
+   (`idempotent_replay: true`) without duplicate draft orders. The
+   dedup record is process-local to the MCP server; the store-level
+   order idempotency keys remain on the draft orders.
+
+## Error semantics
+
+Tool failures return MCP results with `isError: true` and a JSON
+`{"code", "message"}` payload (the SDK prefixes it with
+`Error executing tool <name>:`). Codes:
+
+| Code | Meaning |
+|---|---|
+| `-32001` | authentication failed (unknown/missing key) |
+| `-32002` | permission denied (tool not in the key's permission set) |
+| `-32003` | rate limited (per-key budget exhausted) |
+| `-32004` | mode rejected (real mode requested; MCP is experimental-only) |
+| `-32005` | not found (account / order / approval / symbol) |
+| `-32006` / `-32602` | invalid input / invalid params |
+| `-32007` | backend failure (market data, credits, real-path refusal) |
+| `-32603` | internal error (logged server-side) |
+
+Protocol-level failures (`initialize`, unknown method, malformed JSON)
+use the standard JSON-RPC codes via the SDK.
+
+## Market data honesty
+
+- MCP market data uses the **same primary provider** as the human app
+  (AIsa when `AISA_API_KEY` is set, the deterministic mock otherwise).
+- The free live fallback chain is **disabled on the MCP path**: an
+  unknown symbol returns `-32005` NOT_FOUND instead of triggering a
+  surprise external call. The `provider` field names the source in every
+  quote (`mock` in this build — zero live calls in tests).
+- Mock/deterministic data is labeled wherever it surfaces; nothing is
+  presented as live market truth.
+
+## Representative workflow (implemented, tested)
+
+research → proposal → status, with mocks explicitly labeled:
+
+1. Agent calls `search_investment_opportunities(symbols="AAPL,MSFT")` →
+   ranked opportunities with reasoning (mock provider labeled).
+2. Agent calls `analyze_asset(symbol="AAPL")` → verdict, risk flags,
+   plain-language summary.
+3. Agent calls `prepare_investment_proposal(account_id, allocations)` →
+   dry-run, DRAFT orders created, returns `status: "pending_authorization"`;
+   nothing moves. Mode: experimental (virtual) in this build.
+4. **Human confirms in the app** (or a pre-authorized policy, when such
+   policies exist) — the gate binds agents exactly as it binds the REST
+   app. MCP has no confirm/execute tool.
+5. Agent calls `get_order_status(approval_id)` → pending authorization
+   with the draft orders, or the resolved status afterwards.
+
+Covered by `api/tests/test_mcp.py` (36 tests): stdio round-trips (spawn,
+list, call each read tool, structured output + mode fields), auth
+boundaries (bad key, read-only vs propose, rate limit, real-mode
+rejection), audit-every-call, idempotent propose, and the full workflow.
+
+## What is NOT exposed (unchanged)
 
 - **Real execution tools do not exist.** `submit_live_order` and any
   live-order tool are exposed **only when real execution actually exists**
   (brokerage decision + credentials + compliance review). Today it raises.
   Saying otherwise would be a lie.
-- **No billing/credits administration** beyond the user's own balance reads.
-  An agent cannot buy credits, change caps, or move Stripe money on the
-  user's behalf.
-- **No internal agent identities.** Specialists (LearningAgent, hunter,
-  analyst, executor) stay internal; MCP exposes one Finkow capability
-  surface, not the org chart.
-- **No bulk exfiltration tools.** No "dump all users/accounts" operations;
-  everything is user-scoped.
+- **No confirm/execute over MCP.** The human confirmation gate lives in
+  the app; agents propose, humans dispose.
+- **No billing/credits administration** beyond the user's own balance
+  reads. An agent cannot buy credits, change caps, or move Stripe money.
+- **No internal agent identities.** Specialists stay internal; MCP exposes
+  one Finkow capability surface.
+- **No bulk exfiltration tools.** Everything is user-scoped.
+- REST-only for now (candidates for later MCP phases): `web_search`,
+  goal creation/planning, `explain`, the conversational harness
+  (`/api/harness/run`), and billing checkout. Nothing about them is
+  claimed over MCP.
 
-## Representative workflow (intended)
+## Configuration reference
 
-research → proposal → status, with mocks explicitly labeled:
-
-1. Agent calls `get_opportunities(goal_id)` → ranked opportunities with
-   plain-language reasoning and cited evidence.
-2. Agent calls `analyze_symbol(symbol)` → fundamentals, valuation sanity,
-   risks.
-3. Agent calls `propose_trades(...)` → dry-run, returns a pending approval;
-   nothing moves. Mode: Experimental (paper) in the current build.
-4. User confirms (in-app or via pre-authorized policy) → `confirm_trades`
-   executes the paper trades and returns the audit record.
-5. Agent calls `get_approval_status` / `get_transaction_history` for verified
-   execution details.
-
-## Configuration (intended)
-
-How to run/authenticate/configure/test tool contracts and authorization
-boundaries is defined at implementation time, once API auth and mode
-separation exist. The contract tests must cover: unauthorized execution
-rejection, read-only client cannot submit, agent cannot self-escalate
-permissions, and pending-authorization (never false-executed) confirmations.
+| Variable | Default | Purpose |
+|---|---|---|
+| `FINKOW_MCP_API_KEYS` | (empty → all rejected) | `<secret>[:<perms>[:<user_id>]]`, comma-separated |
+| `FINKOW_MCP_RATE_LIMIT_PER_MIN` | `60` | per-key tool-call budget per minute |
+| `FINKOW_STORE` / `FINKOW_DB_PATH` | `sqlite` / `api/data/finkow.db` | storage backend, shared with the REST app |
+| `AISA_API_KEY` | (unset → mock providers) | switches market/LLM/search to AIsa (metered) |
