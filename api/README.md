@@ -9,7 +9,14 @@ virtual money. Paper trading only; there is no real-money code path.
 api/
   app/
     main.py         # routes: v1 + v2 + v2.1 (harness, gate, audit, billing,
-                    #   brokerage, profiles)
+                    #   brokerage, profiles) + auth/ownership/mode wiring
+    auth.py         # Supabase JWT (HS256) verification, require_user,
+                    #   require_account_owner; dev-mode graceful degradation
+    modes.py        # Mode enum (real/experimental), cross-mode invariant
+    storage_sqlite.py  # durable SQLite store: domain + audit + event log +
+                    #   credits ledger (atomic writes, survives restarts)
+    supabase_store.py  # Supabase REST adapter SKELETON (mocked-HTTP tests only;
+                    #   real project pending on Roger)
     ports.py        # provider ports: MarketDataPort, LLMPort, WebSearchPort
     providers/
       __init__.py   # env-based wiring (AISA_API_KEY -> AIsa, else mocks)
@@ -48,11 +55,14 @@ api/
                     #   credit packs, micros<->credits conversion
     brokerage.py    # BrokeragePort (Alpaca-shaped) + MockBrokerage.
                     # submit_live_order always raises: live trading disabled.
-    trading.py      # paper buy/sell — shared by v1 orders and the executor
+    trading.py      # paper buy/sell — shared by v1 orders and the executor.
+                    #   Mode-gated: cross-mode ops raise CrossModeError;
+                    #   real mode always raises LiveTradingDisabledError
     market.py       # v1 provider abstraction (Stooq, CoinGecko, Yahoo) + TTL cache
-    portfolio.py    # valuation, P&L, allocation, returns — Decimal-exact
-    store.py        # domain records + Store protocol (in-memory; goals, plans,
-                    #   profiles, approvals)
+    portfolio.py    # valuation, P&L, allocation, returns — Decimal-exact.
+                    #   PortfolioView carries mode + virtual flag
+    store.py        # domain records + Store protocol (accounts carry
+                    #   owner_user_id + mode; save_account for cash mutations)
     ai.py           # v1 grounded explain stub (OpenRouter polish optional)
     money.py        # Decimal helpers — no float money, ever
   tests/            # pytest: governance, brokerage, billing, agents, harness,
@@ -67,7 +77,7 @@ LangGraph: the stages are the same shape, the machinery fits this codebase.
 
 ```bash
 uv venv && uv sync                      # creates .venv, installs deps + dev tools
-uv run pytest                           # full suite (187 tests)
+uv run pytest                           # full suite (240 tests)
 uv run ruff check app tests             # lint
 uv run uvicorn app.main:app --reload --port 8000
 ```
@@ -89,6 +99,131 @@ CORS headers. Defaults allow `http://localhost:3000` and
 ```bash
 FINKOW_CORS_ORIGINS=https://finkow.example.com .venv/bin/uvicorn app.main:app --port 8000
 ```
+
+## Auth, modes, persistence (Phase 4)
+
+### Auth (`app/auth.py`)
+
+Account and financial endpoints require a Supabase JWT:
+
+- `SUPABASE_JWT_SECRET` set → `Authorization: Bearer <jwt>` required.
+  Tokens are verified with HS256 (stdlib HMAC, constant-time compare);
+  wrong signature, expired, or missing tokens → **401**. The dependency
+  `require_user` returns the token's `sub` as `user_id`.
+- `SUPABASE_JWT_SECRET` unset → auth **DISABLED** with a loud startup
+  warning; every request runs as the single dev user (`dev-user`), no token
+  needed — the same graceful degradation the web frontend uses. Do not
+  expose a dev-mode instance publicly.
+
+Every account carries `owner_user_id`; every account-scoped endpoint
+enforces ownership → **403** on mismatch (404 stays 404, so existence
+doesn't leak). Public endpoints: `/api/health`, `/api/quotes/{symbol}`,
+`/api/billing/credits/packs`, and the Stripe-signed
+`/api/billing/webhook`.
+
+### Modes (`app/modes.py`)
+
+`Mode.REAL` / `Mode.EXPERIMENTAL` rides on accounts, positions,
+transactions, snapshots, approvals, and brokerage orders. The domain
+invariant is enforced in code, not just labels:
+
+- No operation may read or mutate state across modes (`CrossModeError`).
+  An experimental order can never touch real holdings, and vice versa.
+- Real mode has **no execution path**: `execute_paper_buy/sell`,
+  `InvestmentExecutor.propose/confirm/invest`, and
+  `MockBrokerage(mode=REAL).submit_order` all raise
+  `LiveTradingDisabledError("real execution is not configured…")` —
+  HTTP **501**. Nothing is ever silently simulated as real.
+- Experimental Mode is labeled virtual everywhere it surfaces:
+  `"mode": "experimental", "virtual": true` on portfolio, order,
+  transaction, and brokerage responses.
+
+`POST /api/accounts` accepts `"mode": "real"` to create a real-mode
+account (useful for testing the guardrails) — every money-moving call on
+it fails loudly until a brokerage provider, credentials, and compliance
+review exist (Roger's decision, still open).
+
+### Persistence (`app/storage_sqlite.py`)
+
+`FINKOW_STORE` selects the backend (`memory` | `sqlite` | `supabase`).
+Default is **`sqlite`** (`data/finkow.db`, override with `FINKOW_DB_PATH`):
+financial history must survive restarts, and SQLite is a file — not a new
+database service — so it adds zero infrastructure. `memory` keeps the old
+volatile behavior; `supabase` wires the skeleton adapter (below) and keeps
+logs in memory with a warning.
+
+The SQLite backend holds the domain store, the audit log, the agent event
+log, and the credits ledger (including webhook idempotency keys — replays
+can't double-credit after a restart). Writes are atomic per call under a
+process lock (WAL journaling); decimals stay TEXT, never float.
+
+`SUPABASE_URL` / `SUPABASE_SERVICE_KEY` wire `SupabaseStore`, a
+**skeleton**: accounts, positions, transactions, and orders are implemented
+and tested against mocked HTTP (no live calls — the real project is pending
+on Roger); goals, plans, profiles, and approvals raise
+`SupabaseNotImplementedError` honestly instead of pretending to work.
+
+### Order lifecycle (`app/orders.py`)
+
+Orders move through explicit, validated states — `draft` →
+`awaiting_authorization` → `submitted` → `filled` (plus `partially_filled`
+for future real providers) — with terminal `rejected` / `cancelled` /
+`failed`. Illegal transitions raise `IllegalOrderTransitionError`; terminal
+states are immutable. The paper path: propose → draft, human confirm →
+awaiting_authorization → submitted → filled. The mock fills instantly and
+the fill is recorded with `simulated: true` and **no provider order id** —
+a mock record can never be confused with real execution.
+
+- **Idempotency**: `POST /api/orders` and `POST /api/brokerage/orders`
+  accept an `Idempotency-Key` header; a replay returns the original order
+  instead of executing a duplicate trade.
+- **Reconciliation, not assumption**: `POST /api/orders/{id}/reconcile`
+  re-reads the recorded order and verifies it. A timeout does **not** prove
+  failure — a stuck order is reported inconsistent with an investigation
+  action, never assumed failed, never retried blindly. (The real-provider
+  hook queries provider-side status first; see
+  `docs/EXECUTION_PROVIDER.md`.)
+- **Execution-provider contract**: `app/execution_provider.py` defines the
+  `ExecutionProvider` Protocol a real brokerage must implement (submit,
+  cancel, order status, positions sync, account info, market hours) and the
+  exact data each method needs. No provider is chosen — Roger's decision,
+  still open. Tests prove the mock can never satisfy the interface.
+
+### Risk & authorization controls
+
+The full control list, enforced in code (not just documented):
+
+| Control | Where | Default |
+|---|---|---|
+| Per-trade USD cap | `OrderLifecycle.authorize` (`RiskLimits`), enforced on `POST /api/orders` and every executor path | $25,000 |
+| Daily trades per account | same | 20 |
+| Daily trades per user (across all their accounts — meaningful now that accounts have owners) | same | 50 |
+| Human confirmation gate | `InvestmentExecutor.propose` → `confirm`; draft orders never execute on their own | required |
+| Approval expiry | `confirm` rejects expired approvals and cancels their draft orders | 15 min |
+| Mode separation | `check_mode` on every money-moving call; `CrossModeError` on mismatch | always |
+| Real-mode execution guard | `LiveTradingDisabledError` → HTTP 501; nothing silently simulated | always |
+| Output verifier | `app/governance/verifier.py`: schema + safety checks (PII, guaranteed-returns language) on agent outputs | always |
+| Credit caps | `app/governance/metering.py`: paid-call budgets per account (`FINKOW_AISA_RATE_LIMIT_PER_MIN`) | 60/min |
+| Idempotent submission | idempotency keys on order creation and billing webhooks | always |
+| Audit trail | every money-affecting step appended to the audit log (`trade.executed`, `trade.skipped`, `order.cancelled`, `approval.*`) | always |
+
+Breaches never drop silently: limit breaches and execution errors are
+recorded on the order as `rejected` (with the reason) and returned as 4xx,
+and skipped trades are audit-logged. Per-user daily limits count filled
+orders plus legacy transactions exactly once — never double-counted.
+
+## Environment
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `SUPABASE_JWT_SECRET` | HS256 secret for Supabase JWT auth; unset = auth disabled (dev mode, loud warning) | unset |
+| `FINKOW_STORE` | storage backend: `memory` \| `sqlite` \| `supabase` | `sqlite` |
+| `FINKOW_DB_PATH` | SQLite file location | `api/data/finkow.db` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Supabase REST adapter (skeleton) | unset |
+| `FINKOW_CORS_ORIGINS` | comma-separated browser origins | localhost:3000 |
+| `FINKOW_AISA_RATE_LIMIT_PER_MIN` | paid-port rate budget | 60 |
+| `AISA_API_KEY` | AIsa gateway (market/LLM/search) | unset → mocks |
+| `STRIPE_SECRET_KEY` | Stripe billing (test mode) | unset → 503 |
 
 ## Money rails (v2.1)
 
@@ -155,26 +290,48 @@ Users buy API credits with their card; agents spend them on paid AIsa calls.
   money-affecting action, PII redaction on stored user text.
 - **Event log**: each agent step appends to an in-memory append-only log,
   readable at `GET /api/agents/activity`.
-- **Storage**: `InMemoryStore` implements the `Store` protocol;
-  `supabase/schema.sql` is the Postgres target. Domain code never touches storage
-  details — swap the adapter later.
+- **Storage**: `FINKOW_STORE` selects the backend (default `sqlite`:
+  `data/finkow.db` — survives restarts; `memory` for volatile dev/test;
+  `supabase` for the skeleton adapter). `supabase/schema.sql` is the
+  Postgres target. Domain code never touches storage details.
 
 ## Honest limits
 
-- Single-user, in-memory state (restart wipes it). Supabase is pending.
+- Auth is disabled unless `SUPABASE_JWT_SECRET` is set (dev mode: loud
+  warning, single `dev-user`).
+- The mock brokerage is a single shared sandbox, not per-user state.
+- `SupabaseStore` is a skeleton: accounts/positions/transactions/orders
+  only, tested against mocked HTTP; the real project is pending on Roger.
 - Mock providers are deterministic demo data until `AISA_API_KEY` is set.
-- No real-money execution exists or is reachable in this build.
+- No real-money execution exists or is reachable in this build
+  (`submit_live_order` always raises; real-mode operations fail with 501).
 - Investing involves risk; the app gives no guaranteed returns (the verifier
   rejects that language outright).
+- Mock fills are labeled `simulated: true` with no provider order id —
+  the API/UI can always distinguish them from real execution records.
 
 ## Endpoints
+
+All endpoints except `/api/health`, `/api/quotes/{symbol}`,
+`/api/billing/credits/packs`, and `/api/billing/webhook` (Stripe-signed)
+require authentication (`Authorization: Bearer <Supabase JWT>` when
+`SUPABASE_JWT_SECRET` is set; not needed in dev mode). Account-scoped
+endpoints additionally enforce ownership → 403 on mismatch. Portfolio,
+order, transaction, and brokerage responses carry
+`"mode": "experimental" | "real"` and `"virtual": true/false`; order,
+transaction, and brokerage responses additionally carry `"simulated": true`
+and `"provider_order_id": null` on mock fills, so no client can mistake
+them for real execution records.
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | liveness |
 | POST | `/api/accounts` | create sandbox account ($100,000 virtual) |
 | GET | `/api/quotes/{symbol}` | live quote (`AAPL`, `BTC`, …) |
-| POST | `/api/orders` | virtual buy/sell |
+| POST | `/api/orders` | virtual buy/sell through the order lifecycle (`Idempotency-Key` supported) |
+| GET | `/api/orders/{id}` | order detail: status, fills, honesty markers |
+| GET | `/api/accounts/{id}/orders` | order history for an account |
+| POST | `/api/orders/{id}/reconcile` | reconcile an order against recorded state |
 | GET | `/api/accounts/{id}/portfolio` | valuation, P&L, allocation |
 | GET | `/api/accounts/{id}/transactions` | ledger |
 | GET | `/api/accounts/{id}/history` | portfolio snapshots |

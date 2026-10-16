@@ -21,11 +21,26 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
+from app.modes import REAL_NOT_CONFIGURED, LiveTradingDisabledError, Mode
 from app.money import to_cash, to_qty
+from app.orders import OrderStatus
+
+# Re-exported here for backward compatibility: the exception used to live
+# in this module; it now lives in app.modes next to REAL_NOT_CONFIGURED.
+__all__ = [
+    "LiveTradingDisabledError",
+    "OrderSide",
+    "BrokerageAccount",
+    "BrokeragePosition",
+    "BrokerageOrder",
+    "BrokeragePort",
+    "MockBrokerage",
+    "mock_price_fn",
+    "submit_live_order",
+]
 
 
-class LiveTradingDisabledError(Exception):
-    """Raised whenever anyone tries to touch the (unwired) live-trading path."""
+# (LiveTradingDisabledError lives in app.modes; re-exported above.)
 
 
 class OrderSide(StrEnum):
@@ -57,9 +72,16 @@ class BrokerageOrder:
     side: OrderSide
     order_type: str  # "market" for v2.1
     time_in_force: str  # "day" for v2.1
-    status: str  # "filled" | "rejected"
+    status: OrderStatus  # filled | rejected (mock fills instantly)
     filled_price: Decimal | None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    mode: Mode = Mode.EXPERIMENTAL  # the mock only ever fills experimental orders
+    # Honesty markers: the mock is ALWAYS simulated and NEVER carries a
+    # provider order id. Any consumer checking these can distinguish mock
+    # output from real execution records.
+    simulated: bool = True
+    provider_order_id: str | None = None
+    idempotency_key: str | None = None
 
 
 @runtime_checkable
@@ -75,9 +97,12 @@ class BrokeragePort(Protocol):
         side: OrderSide,
         order_type: str = "market",
         time_in_force: str = "day",
+        idempotency_key: str | None = None,
     ) -> BrokerageOrder: ...
     async def get_order(self, order_id: str) -> BrokerageOrder | None: ...
-    async def list_orders(self, status: str | None = None) -> list[BrokerageOrder]: ...
+    async def list_orders(
+        self, status: OrderStatus | str | None = None
+    ) -> list[BrokerageOrder]: ...
 
 
 def submit_live_order(
@@ -87,10 +112,7 @@ def submit_live_order(
     api_key: str | None = None,
 ) -> BrokerageOrder:
     """The live-trading path. Intentionally unwired in v2.1 — always raises."""
-    raise LiveTradingDisabledError(
-        "live trading is disabled: paper simulation only. "
-        "Enabling it requires brokerage keys, regulatory review, and explicit opt-in."
-    )
+    raise LiveTradingDisabledError(REAL_NOT_CONFIGURED)
 
 
 def mock_price_fn(symbol: str) -> Decimal:
@@ -106,17 +128,24 @@ def mock_price_fn(symbol: str) -> Decimal:
 class MockBrokerage:
     """In-memory paper brokerage: market orders fill immediately at the
     injected price function. ``price_fn`` raising ``KeyError``/``ValueError``
-    means 'unknown symbol'."""
+    means 'unknown symbol'.
+
+    Experimental mode only: constructing with ``mode=Mode.REAL`` makes every
+    order submission raise ``LiveTradingDisabledError`` — the mock never
+    simulates a real order.
+    """
 
     def __init__(
         self,
         price_fn=None,
         starting_cash: Decimal = Decimal("100000.00"),
+        mode: Mode = Mode.EXPERIMENTAL,
     ) -> None:
         self._price_fn = price_fn or mock_price_fn
         self._cash = to_cash(starting_cash)
         self._positions: dict[str, dict] = {}
         self._orders: list[BrokerageOrder] = []
+        self._mode = mode
 
     def _price(self, symbol: str) -> Decimal:
         try:
@@ -150,7 +179,15 @@ class MockBrokerage:
         side: OrderSide,
         order_type: str = "market",
         time_in_force: str = "day",
+        idempotency_key: str | None = None,
     ) -> BrokerageOrder:
+        if self._mode is Mode.REAL:
+            # Never simulate a real order: fail loudly instead.
+            raise LiveTradingDisabledError(REAL_NOT_CONFIGURED)
+        if idempotency_key:
+            for existing in self._orders:
+                if existing.idempotency_key == idempotency_key:
+                    return existing  # replay: no duplicate order, no double fill
         symbol = symbol.upper().strip()
         qty = to_qty(qty)
         if qty <= 0:
@@ -193,8 +230,12 @@ class MockBrokerage:
             side=side,
             order_type=order_type,
             time_in_force=time_in_force,
-            status="filled",
+            status=OrderStatus.FILLED,
             filled_price=price,
+            mode=self._mode,
+            simulated=True,  # mock fill: never a real execution record
+            provider_order_id=None,  # no provider, no provider order id
+            idempotency_key=idempotency_key,
         )
         self._orders.append(order)
         return order

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.market import Quote
+from app.modes import Mode, is_virtual
 from app.money import ALLOC_QUANTUM, to_cash
 from app.store import Account, Position
 
@@ -38,6 +39,12 @@ class PortfolioView:
     total_return_pct: Decimal
     allocation: dict[str, Decimal]
     as_of: datetime
+    mode: Mode = Mode.EXPERIMENTAL
+
+    @property
+    def virtual(self) -> bool:
+        """Experimental Mode is virtual money — never presented as real."""
+        return is_virtual(self.mode)
 
 
 def average_cost(
@@ -117,4 +124,5 @@ def value_portfolio(
         total_return_pct=total_return_pct(total_value, account.initial_cash),
         allocation=allocation(market_values, account.cash),
         as_of=datetime.now(UTC),
+        mode=account.mode,
     )

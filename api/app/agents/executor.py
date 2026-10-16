@@ -35,7 +35,15 @@ from app.brokerage import LiveTradingDisabledError
 from app.governance.audit import AuditLog
 from app.governance.metering import CreditsExhausted
 from app.market import MarketDataError
+from app.modes import REAL_NOT_CONFIGURED, Mode
 from app.money import qty_str, to_cash, to_qty
+from app.orders import (
+    TERMINAL_STATUSES,
+    Order,
+    OrderLifecycle,
+    RiskLimitBreach,
+    RiskLimits,
+)
 from app.portfolio import value_portfolio
 from app.ports import MarketDataPort, ProviderError
 from app.store import ApprovalRequest, InMemoryStore, Snapshot, utcnow
@@ -91,6 +99,7 @@ class InvestmentExecutor:
         agent_name: str = "executor",
         max_trade_usd: Decimal = Decimal("25000"),
         max_daily_trades: int = 20,
+        max_daily_trades_per_user: int = 50,
         approval_ttl: timedelta = timedelta(minutes=15),
     ) -> None:
         self._store = store
@@ -100,15 +109,23 @@ class InvestmentExecutor:
         self._agent_name = agent_name
         self._max_trade_usd = max_trade_usd
         self._max_daily_trades = max_daily_trades
+        self._max_daily_trades_per_user = max_daily_trades_per_user
         self._approval_ttl = approval_ttl
+        # Risk/authorization controls shared with the /api/orders path:
+        # $25k/trade, daily per-account cap, and (now meaningful with
+        # account ownership) a daily per-user cap across all their accounts.
+        self._risk_limits = RiskLimits(
+            max_trade_usd=max_trade_usd,
+            max_daily_trades_per_account=max_daily_trades,
+            max_daily_trades_per_user=max_daily_trades_per_user,
+        )
+        self._orders = OrderLifecycle(store)
 
     # ---------------------------------------------------------- live (disabled)
 
     def submit_live_order(self, symbol: str, qty: Decimal) -> None:
         """The live-trading path. Intentionally unwired — always raises."""
-        raise LiveTradingDisabledError(
-            "live trading is disabled: paper simulation only."
-        )
+        raise LiveTradingDisabledError(REAL_NOT_CONFIGURED)
 
     # ---------------------------------------------------------- paper execution
 
@@ -148,6 +165,11 @@ class InvestmentExecutor:
         account = self._store.get_account(account_id)
         if account is None:
             raise ValueError(f"account not found: {account_id}")
+        if account.mode is Mode.REAL:
+            # Refuse to plan real-money trades with the paper-trading engine:
+            # planning with mock math and presenting it as a real proposal
+            # would be simulated execution wearing a real label.
+            raise LiveTradingDisabledError(REAL_NOT_CONFIGURED)
         targets = self._targets(allocations)
         prospective = await self._plan_trades(account_id, targets)
         trades = [
@@ -162,9 +184,22 @@ class InvestmentExecutor:
         ]
         total = to_cash(sum(t.est_value for t in prospective))
         request = ApprovalRequest(
-            account_id=account_id, trades=trades, total_usd=total, status="pending"
+            account_id=account_id, trades=trades, total_usd=total,
+            status="pending", mode=account.mode,
         )
         self._store.save_approval(request)
+        # Every proposed trade becomes a draft order linked to the approval:
+        # nothing is authorized or submitted until the human confirms.
+        for t in prospective:
+            self._orders.create(
+                account_id=account_id,
+                symbol=t.symbol,
+                side=t.side,
+                qty=t.qty,
+                approval_id=request.id,
+                mode=account.mode,
+                simulated=True,
+            )
         self._events.append(
             self._agent_name,
             f"{self._agent_name}.approval_requested",
@@ -189,6 +224,8 @@ class InvestmentExecutor:
             request.status = "expired"
             request.decided_at = utcnow()
             self._store.save_approval(request)
+            self._cancel_draft_orders(request.account_id, request.id,
+                                      "approval expired")
             self._audit.append(
                 actor=self._agent_name,
                 action="approval.expired",
@@ -201,6 +238,8 @@ class InvestmentExecutor:
         if not approved:
             request.status = "rejected"
             self._store.save_approval(request)
+            self._cancel_draft_orders(request.account_id, request.id,
+                                      "human rejected the approval")
             self._events.append(
                 self._agent_name,
                 f"{self._agent_name}.approval_rejected",
@@ -231,7 +270,12 @@ class InvestmentExecutor:
             )
             for t in request.trades
         ]
-        trades = self._execute_trades(request.account_id, prospective)
+        # Draft orders were created by propose() in prospective order; the
+        # human confirm drives them: draft -> awaiting_authorization ->
+        # submitted -> filled (mock fills instantly, recorded simulated).
+        orders = self._orders.list_for_approval(request.account_id, request.id)
+        trades = self._execute_trades(request.account_id, prospective,
+                                      orders=orders)
         await self._snapshot(request.account_id)
         self._events.append(
             self._agent_name,
@@ -294,13 +338,81 @@ class InvestmentExecutor:
                 out.append(ProspectiveTrade(symbol, "sell", qty, quote.price))
         return out
 
+    def _cancel_draft_orders(
+        self, account_id: str, approval_id: str, reason: str
+    ) -> None:
+        """Cancel the draft orders a propose() created when the approval is
+        rejected or expires: drafts never execute on their own."""
+        for order in self._orders.list_for_approval(account_id, approval_id):
+            if order.status not in TERMINAL_STATUSES:
+                self._orders.cancel(order.id, reason)
+                self._audit.append(
+                    actor=self._agent_name,
+                    action="order.cancelled",
+                    account_id=account_id,
+                    details={"order_id": order.id, "reason": reason},
+                )
+
     def _execute_trades(
-        self, account_id: str, prospective: list[ProspectiveTrade]
+        self,
+        account_id: str,
+        prospective: list[ProspectiveTrade],
+        orders: list[Order] | None = None,
     ) -> list[TradeRecord]:
-        """Execute planned trades, enforcing limits. Returns executed records."""
+        """Execute planned trades through the order lifecycle.
+
+        ``orders`` carries the draft orders a propose() created (human-gated
+        path); without them this is the legacy direct path, where each trade
+        is auto-authorized by the system. Every trade gets a full lifecycle
+        record: draft -> awaiting_authorization|submitted -> filled, or
+        rejected on limit breaches and execution errors. Mock fills are
+        recorded with ``simulated=True``.
+        """
+        account = self._store.get_account(account_id)
+        account_mode = account.mode if account else Mode.EXPERIMENTAL
+        # Match draft orders to prospective trades by economics, not by
+        # position: both lists are in propose() order, but an explicit match
+        # keeps a store reordering from misassigning them.
+        unmatched = list(orders) if orders else []
+
+        def take_order(t: ProspectiveTrade) -> Order:
+            for i, o in enumerate(unmatched):
+                if (
+                    o.symbol == t.symbol
+                    and o.side == t.side
+                    and o.qty == t.qty
+                    and o.status not in TERMINAL_STATUSES
+                ):
+                    return unmatched.pop(i)
+            created, _ = self._orders.create(
+                account_id=account_id,
+                symbol=t.symbol,
+                side=t.side,
+                qty=t.qty,
+                mode=account_mode,
+                simulated=True,
+            )
+            return created
+
         trades: list[TradeRecord] = []
         for t in prospective:
-            if t.est_value > self._max_trade_usd:
+            order = take_order(t)
+            try:
+                if orders is not None:
+                    # human-gated path: explicit authorization, then submit
+                    order = self._orders.authorize(
+                        order.id, est_price=t.est_price,
+                        limits=self._risk_limits,
+                    )
+                    order = self._orders.submit(order.id)
+                else:
+                    # direct path: system auto-authorizes (draft -> submitted)
+                    order = self._orders.authorize_direct(
+                        order.id, est_price=t.est_price,
+                        limits=self._risk_limits,
+                    )
+            except RiskLimitBreach as breach:
+                self._orders.reject(order.id, breach.reason)
                 self._audit.append(
                     actor=self._agent_name,
                     action="trade.skipped",
@@ -308,29 +420,25 @@ class InvestmentExecutor:
                     outcome="rejected",
                     details={
                         "symbol": t.symbol,
-                        "reason": f"exceeds max_trade_usd {self._max_trade_usd}",
+                        "order_id": order.id,
+                        "reason": breach.reason,
+                        "limit": breach.limit,
                     },
-                )
-                continue
-            if self._trades_today(account_id) >= self._max_daily_trades:
-                self._audit.append(
-                    actor=self._agent_name,
-                    action="trade.skipped",
-                    account_id=account_id,
-                    outcome="rejected",
-                    details={"symbol": t.symbol, "reason": "daily trade limit reached"},
                 )
                 continue
             try:
                 if t.side == "buy":
                     txn = execute_paper_buy(
-                        self._store, account_id, t.symbol, t.qty, t.est_price
+                        self._store, account_id, t.symbol, t.qty, t.est_price,
+                        mode=account_mode, order_id=order.id,
                     )
                 else:
                     txn = execute_paper_sell(
-                        self._store, account_id, t.symbol, t.qty, t.est_price
+                        self._store, account_id, t.symbol, t.qty, t.est_price,
+                        mode=account_mode, order_id=order.id,
                     )
             except (InsufficientFundsError, InsufficientPositionError) as exc:
+                self._orders.reject(order.id, str(exc))
                 self._events.append(
                     self._agent_name,
                     f"{self._agent_name}.trade_skipped",
@@ -341,9 +449,19 @@ class InvestmentExecutor:
                     action="trade.skipped",
                     account_id=account_id,
                     outcome="rejected",
-                    details={"symbol": t.symbol, "reason": str(exc)},
+                    details={
+                        "symbol": t.symbol,
+                        "order_id": order.id,
+                        "reason": str(exc),
+                    },
                 )
                 continue
+            self._orders.record_fill(
+                order.id,
+                filled_qty=t.qty,
+                avg_fill_price=txn.price,
+                simulated=True,  # mock fill: never a real execution record
+            )
             trades.append(
                 TradeRecord(
                     side=txn.side,
@@ -360,6 +478,8 @@ class InvestmentExecutor:
                     "symbol": t.symbol,
                     "quantity": str(txn.qty),
                     "price": str(txn.price),
+                    "order_id": order.id,
+                    "simulated": True,
                 },
             )
             self._audit.append(
@@ -371,17 +491,11 @@ class InvestmentExecutor:
                     "side": txn.side,
                     "qty": str(txn.qty),
                     "price": str(txn.price),
+                    "order_id": order.id,
+                    "simulated": True,
                 },
             )
         return trades
-
-    def _trades_today(self, account_id: str) -> int:
-        today = datetime.now(UTC).date()
-        return sum(
-            1
-            for t in self._store.list_transactions(account_id)
-            if t.created_at.date() == today
-        )
 
     async def _snapshot(self, account_id: str) -> None:
         account = self._store.get_account(account_id)

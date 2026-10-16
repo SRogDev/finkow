@@ -8,20 +8,19 @@ domain code never touches storage details directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
-from uuid import uuid4
+
+from app.ids import new_id, utcnow
+from app.modes import Mode
+from app.orders import Order, OrderStatus
 
 STARTING_CASH = Decimal("100000.00")
 
 
-def utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def new_id() -> str:
-    return uuid4().hex[:12]
+# (utcnow/new_id live in app.ids; re-exported here so existing
+# ``from app.store import utcnow, new_id`` imports keep working.)
 
 
 @dataclass
@@ -31,6 +30,8 @@ class Account:
     cash: Decimal
     initial_cash: Decimal
     created_at: datetime
+    owner_user_id: str = ""  # Supabase auth.users id; "" only for pre-ownership data
+    mode: Mode = Mode.EXPERIMENTAL  # Mode.REAL has no execution path wired
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Position:
     symbol: str
     qty: Decimal
     avg_cost: Decimal
+    mode: Mode = Mode.EXPERIMENTAL
 
 
 @dataclass
@@ -52,6 +54,13 @@ class Transaction:
     cash_delta: Decimal  # negative on buy, positive on sell
     realized_pnl: Decimal | None  # set on sells
     created_at: datetime
+    mode: Mode = Mode.EXPERIMENTAL
+    # Order-lifecycle linkage (Phase 4). Every paper fill links back to its
+    # order; ``simulated=True`` marks mock fills so they can never be
+    # presented as real execution.
+    order_id: str | None = None
+    status: OrderStatus = OrderStatus.FILLED
+    simulated: bool = True
 
 
 @dataclass
@@ -60,6 +69,7 @@ class Snapshot:
     total_value: Decimal
     cash: Decimal
     created_at: datetime
+    mode: Mode = Mode.EXPERIMENTAL
 
 
 @dataclass(frozen=True)
@@ -99,11 +109,28 @@ class ApprovalRequest:
     id: str = field(default_factory=new_id)
     created_at: datetime = field(default_factory=utcnow)
     decided_at: datetime | None = None
+    mode: Mode = Mode.EXPERIMENTAL
 
 
 class Store(Protocol):
-    def create_account(self, email: str | None, initial_cash: Decimal = ...) -> Account: ...
+    def create_account(
+        self,
+        email: str | None,
+        initial_cash: Decimal = ...,
+        owner_user_id: str = ...,
+        mode: Mode = ...,
+    ) -> Account: ...
     def get_account(self, account_id: str) -> Account | None: ...
+    def list_accounts_by_owner(self, owner_user_id: str) -> list[Account]:
+        """All accounts owned by a user (for per-user limits)."""
+        ...
+    def save_account(self, account: Account) -> None:
+        """Persist account mutations (e.g. cash balance changes).
+
+        In-memory stores may no-op on identity; durable stores must write
+        the row back — mutating the returned object is not enough.
+        """
+        ...
     def get_positions(self, account_id: str) -> list[Position]: ...
     def get_position(self, account_id: str, symbol: str) -> Position | None: ...
     def upsert_position(self, position: Position) -> None: ...
@@ -123,6 +150,17 @@ class Store(Protocol):
     def list_approvals(
         self, account_id: str, status: str | None = ...
     ) -> list[ApprovalRequest]: ...
+    # -- orders (explicit lifecycle) ---------------------------------
+    def save_order(self, order: Order) -> None:
+        """Insert or update an order (upsert by id)."""
+        ...
+    def get_order(self, order_id: str) -> Order | None: ...
+    def get_order_by_idempotency_key(
+        self, account_id: str, key: str
+    ) -> Order | None: ...
+    def list_orders(
+        self, account_id: str, status: OrderStatus | None = ...
+    ) -> list[Order]: ...
 
 
 class InMemoryStore:
@@ -137,9 +175,15 @@ class InMemoryStore:
         self.plans: dict[str, dict] = {}
         self.profiles: dict[str, UserProfile] = {}
         self.approvals: dict[str, ApprovalRequest] = {}
+        self.orders: dict[str, Order] = {}
+        self.orders_by_idempotency: dict[tuple[str, str], str] = {}
 
     def create_account(
-        self, email: str | None, initial_cash: Decimal = STARTING_CASH
+        self,
+        email: str | None,
+        initial_cash: Decimal = STARTING_CASH,
+        owner_user_id: str = "",
+        mode: Mode = Mode.EXPERIMENTAL,
     ) -> Account:
         account = Account(
             id=new_id(),
@@ -147,12 +191,23 @@ class InMemoryStore:
             cash=initial_cash,
             initial_cash=initial_cash,
             created_at=utcnow(),
+            owner_user_id=owner_user_id,
+            mode=mode,
         )
         self.accounts[account.id] = account
         return account
 
     def get_account(self, account_id: str) -> Account | None:
         return self.accounts.get(account_id)
+
+    def list_accounts_by_owner(self, owner_user_id: str) -> list[Account]:
+        return [
+            a for a in self.accounts.values()
+            if a.owner_user_id == owner_user_id
+        ]
+
+    def save_account(self, account: Account) -> None:
+        self.accounts[account.id] = account
 
     def get_positions(self, account_id: str) -> list[Position]:
         return [p for (aid, _), p in self.positions.items() if aid == account_id]
@@ -220,4 +275,32 @@ class InMemoryStore:
             r
             for r in self.approvals.values()
             if r.account_id == account_id and (status is None or r.status == status)
+        ]
+
+    # -- orders ------------------------------------------------------
+
+    def save_order(self, order: Order) -> None:
+        self.orders[order.id] = order
+        if order.idempotency_key:
+            self.orders_by_idempotency[
+                (order.account_id, order.idempotency_key)
+            ] = order.id
+
+    def get_order(self, order_id: str) -> Order | None:
+        return self.orders.get(order_id)
+
+    def get_order_by_idempotency_key(
+        self, account_id: str, key: str
+    ) -> Order | None:
+        order_id = self.orders_by_idempotency.get((account_id, key))
+        return self.orders.get(order_id) if order_id else None
+
+    def list_orders(
+        self, account_id: str, status: OrderStatus | None = None
+    ) -> list[Order]:
+        return [
+            o
+            for o in self.orders.values()
+            if o.account_id == account_id
+            and (status is None or o.status is status)
         ]

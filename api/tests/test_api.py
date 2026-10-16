@@ -71,34 +71,35 @@ def test_full_buy_hold_sell_flow(client):
     ).json()
     assert buy["cash_after"] == "98500.00"
 
-    # buy 0.5 BTC @ 60000 -> cash 68500
+    # buy 0.4 BTC @ 60000 -> cash 74500 (0.5 BTC would breach the $25k/trade
+    # risk control, enforced on this endpoint since Phase 4)
     c.post(
         "/api/orders",
-        json={"account_id": account_id, "symbol": "BTC", "side": "buy", "quantity": "0.5"},
+        json={"account_id": account_id, "symbol": "BTC", "side": "buy", "quantity": "0.4"},
     )
     pf = c.get(f"/api/accounts/{account_id}/portfolio").json()
-    assert pf["cash"] == "68500.00"
+    assert pf["cash"] == "74500.00"
     assert pf["total_value"] == "100000.00"
     assert pf["total_return_pct"] == "0.00"
     alloc = pf["allocation"]
-    assert alloc["BTC"] == "0.3000"
-    assert alloc["CASH"] == "0.6850"
+    assert alloc["BTC"] == "0.2400"
+    assert alloc["CASH"] == "0.7450"
 
-    # market moves: BTC -> 66000. Portfolio gains $3000.
+    # market moves: BTC -> 66000. Portfolio gains $2400.
     c.fake_market.prices["BTC"] = Decimal("66000.00")
     pf2 = c.get(f"/api/accounts/{account_id}/portfolio").json()
-    assert pf2["total_value"] == "103000.00"
-    assert pf2["total_return_pct"] == "3.00"
+    assert pf2["total_value"] == "102400.00"
+    assert pf2["total_return_pct"] == "2.40"
     btc = next(p for p in pf2["positions"] if p["symbol"] == "BTC")
-    assert btc["unrealized_pnl"] == "3000.00"
+    assert btc["unrealized_pnl"] == "2400.00"
 
-    # sell 5 AAPL @ 150 -> realized pnl 0, cash 69250
+    # sell 5 AAPL @ 150 -> realized pnl 0, cash 75250
     sell = c.post(
         "/api/orders",
         json={"account_id": account_id, "symbol": "AAPL", "side": "sell", "quantity": "5"},
     ).json()
     assert sell["realized_pnl"] == "0.00"
-    assert sell["cash_after"] == "69250.00"
+    assert sell["cash_after"] == "75250.00"
 
     # ledger + history exist
     txns = c.get(f"/api/accounts/{account_id}/transactions").json()["transactions"]
@@ -106,15 +107,24 @@ def test_full_buy_hold_sell_flow(client):
     assert [t["side"] for t in txns] == ["buy", "buy", "sell"]
     hist = c.get(f"/api/accounts/{account_id}/history").json()["snapshots"]
     assert len(hist) >= 3
-    assert hist[-1]["total_value"] == "103000.00"
+    assert hist[-1]["total_value"] == "102400.00"
 
 
 def test_cannot_overspend(client):
     c = client
     account_id = c.post("/api/accounts", json={}).json()["account_id"]
+    # spend down to $10k with six $15k buys (each under the $25k/trade
+    # risk control, enforced on this endpoint since Phase 4)
+    for _ in range(6):
+        r = c.post(
+            "/api/orders",
+            json={"account_id": account_id, "symbol": "AAPL", "side": "buy", "quantity": "100"},
+        )
+        assert r.status_code == 200
+    # a $15k buy now exceeds the remaining cash -> 400, order rejected
     resp = c.post(
         "/api/orders",
-        json={"account_id": account_id, "symbol": "BTC", "side": "buy", "quantity": "100"},
+        json={"account_id": account_id, "symbol": "AAPL", "side": "buy", "quantity": "100"},
     )
     assert resp.status_code == 400
     assert "insufficient" in resp.json()["detail"].lower()
@@ -143,7 +153,7 @@ def test_ai_explain_is_grounded_in_portfolio(client):
     account_id = c.post("/api/accounts", json={}).json()["account_id"]
     c.post(
         "/api/orders",
-        json={"account_id": account_id, "symbol": "BTC", "side": "buy", "quantity": "0.5"},
+        json={"account_id": account_id, "symbol": "BTC", "side": "buy", "quantity": "0.4"},
     )
     c.fake_market.prices["BTC"] = Decimal("66000.00")
     resp = c.post(
@@ -154,5 +164,5 @@ def test_ai_explain_is_grounded_in_portfolio(client):
     body = resp.json()
     assert body["grounded"] is True
     # answer must reference real computed numbers, not hallucinations
-    assert "103000" in body["answer"].replace(",", "")
+    assert "102400" in body["answer"].replace(",", "")
     assert "BTC" in body["answer"]

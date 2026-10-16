@@ -5,3 +5,9 @@ __pycache__/
 .ruff_cache/
 .env
 .env.local
+# SQLite durable store (FINKOW_STORE=sqlite default): local runtime data,
+# never committed.
+data/
+*.db
+*.db-wal
+*.db-shm

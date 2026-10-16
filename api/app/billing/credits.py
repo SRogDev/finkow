@@ -161,7 +161,18 @@ class CreditsLedger:
 
 _ledger = CreditsLedger()
 
+# Optional durable backend (e.g. SqliteCreditsLedger) wired at startup.
+# Same duck-typed contract: credit/credit_unique/debit/balance/spent_since/
+# list/reset.
+_ledger_override: CreditsLedger | None = None
+
+
+def set_ledger(ledger: CreditsLedger | None) -> None:
+    """Swap the process-wide ledger backend (startup wiring / test hook)."""
+    global _ledger_override
+    _ledger_override = ledger
+
 
 def get_ledger() -> CreditsLedger:
     """Process-wide ledger singleton (reset by ``reset_metering`` in tests)."""
-    return _ledger
+    return _ledger_override if _ledger_override is not None else _ledger
