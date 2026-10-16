@@ -67,7 +67,7 @@ LangGraph: the stages are the same shape, the machinery fits this codebase.
 
 ```bash
 uv venv && uv sync                      # creates .venv, installs deps + dev tools
-uv run pytest                           # full suite (154 tests)
+uv run pytest                           # full suite (187 tests)
 uv run ruff check app tests             # lint
 uv run uvicorn app.main:app --reload --port 8000
 ```

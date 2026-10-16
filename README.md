@@ -1,43 +1,83 @@
 # Finkow
 
-**Source-available AI investing app.** AI agents invest for you, detect opportunities, and explain everything in plain language — no brokerage apps, no finance jargon.
-
-> Tell Finkow your goal → agents research, invest (paper), and keep you posted.
+**AI-native investment platform.** Tell Finkow your goal in plain language —
+one intelligent system researches, plans, manages a portfolio, and explains
+every move in plain language.
 
 ## What it is
 
-- **Investing autopilot**: state a goal in natural language; AI agents build the plan, detect opportunities, and manage a paper portfolio.
-- **Opportunity radar**: agents scan markets and the web for opportunities and bring them to you with plain-language reasoning.
-- **Sentient UI**: the app feels alive — proactive briefs, conversational portfolio, ambient status. Finance complexity stays hidden.
-- **Learn by watching**: every agent action is explained; financial intuition builds itself.
+- **Conversational investing**: natural-language goals → agent-built plan,
+  opportunity radar, managed paper portfolio, grounded explanations.
+- **One intelligent system**: an orchestrator delegates to specialists
+  (goal learning, opportunity hunting, financial analysis, execution) — the
+  specialists stay internal; the user talks to Finkow.
+- **Two modes**: Experimental (virtual/paper capital) and Real
+  (real money). Modes never mix state — simulated is never presented as real.
+  The Real path is not built yet; the live order path is intentionally disabled.
+- **MCP direction**: authorized external AI agents will get the same trusted
+  capabilities through MCP — intended, scoped, and gated on API auth + mode
+  separation. Not implemented yet (see `docs/MCP_SPEC.md`).
 
-## What it is not (yet)
+## Implemented capabilities (honest)
 
-A broker. No real-money execution in v2.2 — paper trading only, with the live-trading path intentionally disabled. Stripe is wired for product billing (flagged) and for API credits that agents spend on paid AIsa calls (metered, capped); the brokerage is an interface with a mock adapter. Real investing comes later with brokerage keys and compliance.
+- Orchestrator + 4 specialist agents, confidence routing, checkpoints
+- Human confirmation gate on trades (approvals expire after 15 minutes)
+- Paper trading with Decimal-exact math, per-trade and daily limits
+- Goal planning, opportunity radar, grounded explainer, agent activity log
+- Governance: output verifier, append-only audit log, rate limiter, PII filter
+- Agent-money layer: Stripe Checkout credit packs ($5/$20/$50), append-only
+  credits ledger, per-call metering from AIsa's actual cost, balance +
+  daily/monthly caps, HTTP 402 on exhaustion
+- Market data chain: AIsa → keyless direct (Yahoo/Stooq/CoinGecko) →
+  deterministic mock, TTL-cached
+
+## Honest limits
+
+- **Paper only.** No real-money execution exists or is reachable in this build.
+- **In-memory.** Restart wipes everything (audit log, event log, credits
+  ledger). Supabase is pending.
+- **Unauthenticated API.** FastAPI endpoints have no auth; user→account
+  ownership is not enforced.
+- **187 backend tests + 36 web tests green** (2026-10-16 audit). The web
+  production build currently fails on legacy v1 imports (being fixed).
 
 ## Status
 
-- **v2.2 API (2026-10-06):** agent-money layer — users buy API credits with their card (Stripe Checkout, $5/$20/$50 packs; webhook fulfills the append-only credits ledger, idempotent), agents spend them on paid AIsa calls with per-call metering (actual cost from AIsa's cost header), balance + daily/monthly spending caps enforced before each call, market data falls back to free quotes and LLM/search failures return HTTP 402 with a top-up link. Full simulated E2E verified with exact balances. 187 backend tests green.
-- **v2.1 API (2026-10-06):** orchestrator harness (single entry, 4 specialists — LearningAgent, OpportunityHunter, FinancialAnalyst, InvestmentExecutor — confidence routing, checkpoints, adapted from Polygrow patterns) + governance (output verifier, audit log, rate limiter, PII filter) + human confirmation gate for trades + Stripe billing skeleton (flagged) + Alpaca-shaped brokerage interface (mock). Full simulated investment flow verified end to end with exact balances. 154 backend tests green.
-- **v2 API (2026-10-06):** provider ports (MarketData/LLM/WebSearch) with AIsa + mock + free direct-fallback adapters and TTL quote caching; agent pipeline writing to an append-only event log; goal/radar/invest/explain/activity endpoints on the FastAPI backend.
-- **v1 (2026-09-26):** virtual-money sandbox (FastAPI + Next.js 16), verified end to end. Now the paper-trading engine under the agents.
-- **Honest limits:** single-user, in-memory data (Supabase pending); AIsa adapters live-verified via CLI ($0.02 market-data call, <$0.01 LLM, ~$0.016 search); no real-money execution exists or is reachable in this build.
-- Brand: gold `#F59E0B`, Swiss-minimalist.
+- **Phase 0 (2026-10-16):** audit + financial-execution reality check (see
+  `PLAN.md`). 187 pytest + 36 web tests green; tsc has 14 legacy errors.
+- **v2.2 (2026-10-06):** agent-money layer (credits, metering, caps), full
+  simulated E2E with exact balances.
+- **v2.1 (2026-10-06):** orchestrator harness + governance + confirmation
+  gate + Stripe billing skeleton + Alpaca-shaped brokerage interface (mock).
+- **v1 (2026-09-26):** virtual-money sandbox (the paper-trading engine under
+  the agents).
+- Brand: gold `#F59E0B` on dark charcoal — minimalist financial observatory,
+  not a trading dashboard.
 
 ## Stack
 
-Next.js → FastAPI (orchestrator + agents + financial domain) → AIsa (models, market data, web search) → Stripe (product billing, flagged) → Supabase (pending)
+Next.js 16 → FastAPI (`uv`) → AIsa (models, market data, web search) →
+Stripe (test mode) → Supabase (pending)
 
 ## Structure
 
 ```
 finkow/
-├── web/      # Next.js app (sentient UI)
-├── api/      # FastAPI: harness, agents, governance, billing, brokerage (uv-managed)
-├── docs/     # product-context.md (v1 spec), PRODUCT_REFRAME.md (v2), BUILD_V2_1.md
-└── supabase/ # SQL schema (pending connection)
+├── web/                  # Next.js app (gold conversational UI)
+├── api/                  # FastAPI: harness, agents, governance, billing, brokerage (uv-managed)
+├── docs/                 # PRODUCT_REFRAME.md (authoritative spec), MCP_SPEC.md, KEY_SUCCESS.md,
+│                         #   VISUAL_DIRECTION.md, PROJECT_BRIEF.md, product-context.md (v1 archive)
+├── design-system/finkow/ # MASTER.md (gold design system)
+└── supabase/             # SQL schema (pending connection)
 ```
+
+## Docs
+
+- `docs/PRODUCT_REFRAME.md` — the authoritative product spec
+- `docs/KEY_SUCCESS.md` — strategic mission (agent-first as hypothesis)
+- `docs/MCP_SPEC.md` — intended external-agent interface (not implemented)
+- `docs/VISUAL_DIRECTION.md` — visual brief
 
 ## License
 
-Elastic License 2.0 — see [LICENSE](LICENSE). Source-available: you may use, copy, modify, and distribute the code, but you may not provide it to third parties as a hosted or managed service.
+MIT — see [LICENSE](LICENSE).

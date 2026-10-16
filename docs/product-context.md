@@ -1,3 +1,19 @@
+# Finkow — Product Context (v1 archive)
+
+> **HISTORICAL (2026-09-26).** This document was the original v1 spec for the
+> financial learning sandbox. It is kept as an archive. Where it conflicts
+> with `docs/PRODUCT_REFRAME.md` (the authoritative spec since 2026-10-06,
+> re-authored 2026-10-16), the reframe wins:
+>
+> - The v1 "learning sandbox / user drives" positioning is superseded by the
+>   v2 AI-native investment-platform positioning.
+> - v1 non-goals (multi-user auth, Supabase migration) are now pending
+>   work items, not rejections.
+> - Everything else below is historical background, not current product
+>   definition. Read it for context, not for direction.
+
+<!-- Original content below, unmodified, archived 2026-10-16. -->
+
 # Finkow — Product Context
 
 > Extracted from Roger's product conversations (2026-09-26). Canonical spec for builders.

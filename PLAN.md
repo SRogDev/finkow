@@ -4,8 +4,8 @@
 > Stack: Next.js 16 + FastAPI (`uv`) + Supabase (pending) + AIsa + Stripe.
 > Thesis: AI-native investing; paper trading now, real money later with
 > brokerage keys + compliance.
-> License: **MIT** — the committed `LICENSE` file is MIT. README and
-> `docs/PRODUCT_REFRAME.md` still claim "Elastic License 2.0" (fix in Phase 1).
+> License: **MIT** — the committed `LICENSE` file is MIT (README and
+> `docs/PRODUCT_REFRAME.md` claims corrected in Phase 1).
 
 ## Phase 0 baseline (2026-10-16)
 
@@ -53,11 +53,13 @@ runs; no commits, no live API calls (no keys on this machine).
 - [ ] API auth: verify Supabase JWTs on FastAPI endpoints; enforce
   user→account ownership on every `account_id`
 - [ ] Persist audit/event/credits logs (currently lost on restart)
-- [ ] Resolve LICENSE/docs mismatch: `LICENSE` file is MIT; README and
-  `docs/PRODUCT_REFRAME.md` claim Elastic 2.0
-- [ ] Update `api/README.md` test count (187, not 154)
-- [ ] Single source of truth docs (SPEC S14): `docs/PRODUCT_REFRAME.md`
+- [x] Resolve LICENSE/docs mismatch: `LICENSE` file is MIT; README and
+  `docs/PRODUCT_REFRAME.md` claimed Elastic 2.0 → corrected in Phase 1
+- [x] Update `api/README.md` test count (187, not 154)
+- [x] Single source of truth docs (SPEC S14): `docs/PRODUCT_REFRAME.md`
   authoritative; align/label `docs/product-context.md` historical; write
+  `docs/VISUAL_DIRECTION.md`, `docs/MCP_SPEC.md`, `docs/KEY_SUCCESS.md` —
+  done in Phase 1
   `docs/VISUAL_DIRECTION.md`, `docs/MCP_SPEC.md`, `docs/KEY_SUCCESS.md`;
   clean `design-system/finkow/MASTER.md` (remove green `#22C55E` CTA,
   IBM Plex Sans, trading-dashboard patterns); rewrite README honestly

@@ -1,98 +1,150 @@
-# Finkow Product Reframe — v2 (2026-10-06)
+# Finkow — Product Reframe (authoritative spec)
 
-Owner directive. This document overrides the v1 "learning sandbox" positioning
-where it conflicts. `docs/product-context.md` remains the v1 spec archive.
+> **Status:** authoritative product spec (single source of truth), 2026-10-16.
+> Everything that contradicts it elsewhere in this repo is stale and must be
+> labeled historical, not followed.
+>
+> Supersedes the 2026-10-06 "owner directive" version of this file (that
+> version wrongly claimed Elastic License 2.0; the committed `LICENSE` file is
+> MIT and MIT wins — resolved in Phase 1).
+>
+> `docs/product-context.md` is the v1 archive (2026-09-26); where it conflicts
+> with this document, this document wins.
 
 ## One-liner
 
-Democratize investing: AI agents that invest for you, detect opportunities, and
-explain everything in plain language. No brokerage apps. No finance jargon.
-Anyone can grow money.
+An AI-native investment platform: tell Finkow your goal in plain language;
+one intelligent system researches, plans, manages, and explains — paper
+trading now, real money only behind an explicit, authorized path later.
 
-## What changed
+## What Finkow is
 
-- FROM: open-source financial learning sandbox (user drives, virtual money,
-  learning-by-doing).
-- TO: source-available (Elastic License 2.0) consumer **product** — autonomous
-  AI investing agents. The user states goals in natural language; agents do the
-  rest. v2 trades with **paper money only**. Real-money execution is phase 3
-  (brokerage connections + compliance) — explicitly out of scope.
+- **An investment platform, first.** It exists to help people grow money
+  through investing. It is not a budgeting app, not an expense tracker, not a
+  generic chatbot, and not a manual trading terminal.
+- **AI as the primary interaction.** One intelligent system the user talks to
+  in natural language. Specialist agents (research, planning, execution,
+  explanation) are internal implementation details — never the user's mental
+  model.
+- **Human-accessible.** Plain language, progressive disclosure, zero finance
+  jargon by default. Financial intuition is a side effect, not the product.
+- **For humans and external agents alike.** The same trusted capabilities,
+  exposed to people through the conversational interface and to authorized
+  external AI agents through MCP — one domain, two doors. (See
+  `docs/MCP_SPEC.md` and `docs/KEY_SUCCESS.md`.)
 
-## Product principles
+## What Finkow is not
 
-1. **Radical simplification.** The user never sees a ticker, order type, or
-   brokerage screen unless they ask. One goal in, one portfolio out.
-2. **Sentient UI.** The app feels alive: proactive (opportunities and briefs
-   arrive unprompted), conversational (natural language first, not forms),
-   ambient (the portfolio has a pulse, not a spreadsheet), explanatory (every
-   agent action shows its reasoning in plain language), calm (no trading-app
-   noise — no candlestick overload, no jargon).
-3. **Trust through transparency.** Agents earn trust by showing *why* in plain
-   language for every action. No black-box moves.
-4. **Abstract the world's finance into one place.** Stocks, ETFs, crypto —
-   one portfolio, one language, one app.
+- A brokerage. There is no real-money execution and no real brokerage
+  integration in the current build. Nothing here moves real money.
+- A budget/expense/household-finance tool.
+- A promise of returns. No guaranteed-return language anywhere in the
+  product; the output verifier rejects it.
 
-## v2 MVP scope
+## Real Mode vs Experimental Mode
 
-### API (FastAPI, `api/`)
+The two modes are the product's core trust boundary. They are defined by
+which capital is at stake, and their state must never mix:
 
-- **Provider ports** (interfaces, dependency-injected):
-  - `MarketData`: quotes, fundamentals, news. AIsa implementation via
-    `https://api.aisa.one/apis/v1/financial/*` (stocks incl. intraday, crypto,
-    filings). Mock adapter when `AISA_API_KEY` is absent. Direct
-    Yahoo/Coingecko fallback adapter for quotes (free, no key).
-  - `LLM`: chat completions. AIsa implementation via OpenAI-compatible
-    `https://api.aisa.one/v1`. Mock adapter (deterministic) when no key.
-  - `WebSearch`: AIsa implementation (Tavily). Mock adapter when no key.
-- **Agent pipeline** (small orchestrated steps, no heavy framework required;
-  each step writes to an append-only event log; all LLM calls go through the
-  LLM port with structured prompts; all market facts through the MarketData
-  port — no hardcoded numbers):
-  - `GoalPlanner`: natural-language goal → investment plan (allocation,
-    horizon, risk) in plain language.
-  - `OpportunityRadar`: scans market data + web search → ranked opportunities
-    with reasoning.
-  - `PortfolioPilot`: paper-trade execution + rebalancing (extends the v1
-    virtual accounts).
-  - `Explainer`: "what happened / why" for portfolio moves and agent actions,
-    grounded in real data.
-- **Endpoints** (draft): `POST /goals`, `GET /goals/{id}/plan`,
-  `GET /radar/opportunities`, `POST /portfolio/invest` (paper),
-  `GET /portfolio`, `POST /explain`, `GET /agents/activity` (event log).
-- Quote caching: aggressive (TTL) regardless of provider — cost and latency.
+| | Experimental Mode | Real Mode |
+|---|---|---|
+| Capital | virtual/paper only | user's real money |
+| Execution | simulated fills against provider port | real brokerage integration |
+| State | separate portfolios, holdings, cash, orders, transactions, credits, agent authorizations | separate everything — no shared records |
 
-### Web (Next.js, `web/`)
+Rules:
 
-- **One conversational home.** Sentient UI per principles above:
-  - natural-language goal input ("grow $1,000 over 5 years, low risk"),
-  - live agent activity feed ("Radar found 3 opportunities"),
-  - portfolio pulse (alive status, plain-language),
-  - opportunity cards with one-tap paper invest,
-  - explanations everywhere, zero jargon by default.
-- Brand: gold `#F59E0B`, Swiss-minimalist. **Run the ui-ux-pro-max
-  design-system lookup first** (`scripts/search.py --design-system`), then
-  implement. No exceptions.
+1. **No state mixing.** Real and Experimental state (portfolios, holdings,
+   cash, orders, transactions, execution results, strategy state, agent
+   authorizations) live in disjoint domains. A test must prove simulated
+   operations cannot contaminate real state, and vice versa.
+2. **Never silently mock for real.** A missing real-money integration is
+   reported as missing, never replaced by a mock behind the scenes.
+3. **Simulated is always labeled simulated.** A simulated execution is never
+   displayed as a real one — not in the UI, not in MCP tool results, not in
+   logs the user can see.
+4. **The live path stays disabled** until a brokerage decision (Roger's),
+   credentials, and compliance review exist. Today, `submit_live_order`
+   always raises.
 
-### Non-goals (v2)
+## Capabilities (intended product)
 
-Real-money execution. Multi-user auth/billing. Supabase migration (still
-pending Roger — keep in-memory storage, note it).
+- **Conversational home.** Natural-language goal input, persistent portfolio
+  indicator (value, movement, link to the portfolio view; virtual capital
+  always labeled), useful default state (input, portfolio context, recent
+  activity, discoveries) — no empty screens, no artificial activity.
+- **Portfolio management.** Total value → period performance → gains/losses
+  → allocation → positions → recent transactions → full history. Realized vs
+  unrealized gains, deposits/withdrawals, fees, and cash are distinguished;
+  deposits are never presented as gains.
+- **Financial history.** Chronological transaction history with explicit
+  statuses (proposed / submitted / partially filled / filled / rejected /
+  cancelled / failed) and only verified execution details.
+- **Intelligent activity.** An activity inbox in three states — requires
+  attention / in progress / completed — each item communicating what, why,
+  status, and the next action. A running task is never shown as completed.
+- **Actionable discoveries.** Opportunities are presented as: what was
+  discovered, why it may matter, supporting evidence, principal
+  risks/uncertainties, whether action is proposed, and the next available
+  action — never as guaranteed outcomes. Detecting ≠ executing.
+- **Trust & safety.** Human confirmation gate on money-affecting actions;
+  append-only audit of every money-affecting operation; PII redaction on
+  stored text; plain-language "why" for every agent action.
 
-## Acceptance criteria
+## External-agent access
 
-1. Goal "grow $1,000 over 5 years, low risk" → plan with allocation, in plain
-   language, no jargon.
-2. Radar returns ≥ 3 opportunities with reasoning (mock or AIsa).
-3. One-tap paper invest → portfolio updates with live (or mock) prices.
-4. "Why did my portfolio move today?" → grounded explanation citing real data.
-5. Every market fact flows through the MarketData port; every AI text through
-   the LLM port.
-6. Backend: pytest green. Web: `tsc` clean + production build green.
+External AI agents interact with Finkow through MCP, reusing the same
+backend and the same rules as the human app (client auth, account
+authorization, tool permissions, mode restrictions, rate limits, audit
+logging, idempotent execution). MCP execution tools are exposed **only when
+the corresponding execution capability actually exists** — today that means
+no real-execution tools at all. Full contract: `docs/MCP_SPEC.md`.
+The business hypothesis behind this is recorded — as a hypothesis — in
+`docs/KEY_SUCCESS.md`.
 
-## Engineering rules (non-negotiable)
+## Current capabilities vs intended product (honest)
 
-- gentle-ai skill: ODD → TDD → RDD. No exceptions.
-- PR workflow: branch → PR → squash-merge. Never push to `main` directly.
-  (Muse merges his own PRs — Roger authorized.)
-- README touch-up in the same PR (English, current, no invented claims).
-- Elastic License 2.0. English code, comments, and docs.
+As of 2026-10-16. This is the implemented reality; everything above this
+section is the intended product.
+
+- **Paper trading only.** `MockBrokerage` fills paper orders instantly.
+  There is no real-money code path and none is reachable in this build.
+- **In-memory state.** The `InMemoryStore` implements the `Store` protocol;
+  restart wipes everything (audit log, event log, credits ledger included).
+  Supabase is pending (schema exists, adapter not built).
+- **No API auth.** FastAPI endpoints have no authentication and no
+  user→account ownership checks. A Supabase sign-in gate exists in the web
+  app but is disabled when unconfigured.
+- **No mode separation yet.** Real/Experimental mode separation is defined
+  here but not yet enforced in the domain (Phase 4 of the evolution plan).
+- **Market data, partially live.** Port chain AIsa → keyless direct
+  (Yahoo/Stooq/CoinGecko) → deterministic mock, TTL-cached; live freshness
+  not verified in the latest audit (no keys on the audit machine).
+- **LLM/search cost real.** The agent-money layer is implemented and
+  simulated end to end with exact balances: users buy API credits
+  ($5/$20/$50 packs) via Stripe Checkout; agents spend them on paid AIsa
+  calls with per-call metering from AIsa's actual cost header, balance plus
+  daily/monthly caps enforced before each call, 402 + top-up link on
+  exhaustion. Stripe and AIsa keys are required for the live path.
+- **What is implemented and verified:** 187 backend tests + 36 web tests
+  green (2026-10-16 audit): orchestrator + 4 specialists (LearningAgent,
+  OpportunityHunter, FinancialAnalyst, InvestmentExecutor), human
+  confirmation gate (15-min approval expiry), governance (output verifier,
+  audit log, rate limiter, PII filter), credits ledger, decimal-exact
+  portfolio math, paper buy/sell + one-tap invest, goal planning,
+  opportunity radar, grounded explainer.
+- **What is not implemented:** real execution, mode separation, API auth,
+  persistence, MCP, background workers, order lifecycle beyond
+  proposed/filled/rejected (no partial fills, no cancel-submitted, no
+  timeout reconciliation).
+
+## Non-negotiables
+
+1. Financial truth: simulated is never presented as real.
+2. AI-native: one intelligent system; specialists stay internal.
+3. Investment-first: not budgeting, not a tracker, not a terminal.
+4. No guaranteed-return language anywhere.
+5. Human stays in control of execution: detecting ≠ executing; confirmation
+   gates bind.
+6. External agents get the same trusted capabilities as humans — no more, no less.
+7. English code, comments, and docs. MIT license (per the committed `LICENSE`).

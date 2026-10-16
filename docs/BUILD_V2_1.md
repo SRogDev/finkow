@@ -1,5 +1,10 @@
 # Finkow v2.1 Build Brief — 2026-10-06 (Roger's directive)
 
+> **HISTORICAL (2026-10-16).** This was the v2.1 build brief; kept as an
+> archive. The license line below ("Elastic License 2.0") is **wrong** — the
+> committed `LICENSE` file is MIT and MIT wins (corrected in Phase 1, see
+> `docs/PRODUCT_REFRAME.md`). Do not follow the license claim here.
+
 This extends `docs/PRODUCT_REFRAME.md`. Goal: production-ready MVP that feels
 like a gold mine, runs a robust agent harness, and is ready for real money
 rails (paper/simulated verified now; live money behind explicit keys + gates).
